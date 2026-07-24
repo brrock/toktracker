@@ -48,7 +48,7 @@ jobs:
             tag="nightly-$(date -u +%Y%m%d-%H%M%S)-${GITHUB_SHA::7}"
           else
             latest="$(git tag --list 'v[0-9]*' --sort=-v:refname | head -n1)"
-            latest="${latest:-v0.1.0}"
+            latest="${latest:-v0.0.0}"
             tag="$(bun -e '
               const [current, kind] = process.argv.slice(1);
               const parts = current.replace(/^v/, "").split(".").map(Number);
