@@ -1,0 +1,16 @@
+{
+  "name": "@toktracker/client",
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "bun --watch src/index.ts",
+    "start": "bun src/index.ts",
+    "build": "bun build src/index.ts --outdir dist --target bun && bun build bin/toktracker-client.ts --outfile dist/cli.js --target bun",
+    "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@toktracker/cli": "workspace:*",
+    "@toktracker/shared": "workspace:*",
+    "@toktracker/token-calc": "workspace:*"
+  }
+}

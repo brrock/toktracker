@@ -1,0 +1,33 @@
+{
+  "name": "toktracker",
+  "version": "0.0.0",
+  "private": true,
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "type": "module",
+  "scripts": {
+    "dev": "bun scripts/dev.ts",
+    "setup:gateway": "bun apps/gateway/bin/toktracker-gateway.ts setup",
+    "setup:client": "bun apps/client/bin/toktracker-client.ts setup",
+    "start:gateway": "bun apps/gateway/bin/toktracker-gateway.ts run-service",
+    "start:client": "bun apps/client/bin/toktracker-client.ts run-service",
+    "cli:gateway": "bun apps/gateway/bin/toktracker-gateway.ts",
+    "cli:client": "bun apps/client/bin/toktracker-client.ts",
+    "build": "bun run build:dashboard && bun --filter @toktracker/gateway build && bun --filter @toktracker/client build",
+    "build:dashboard": "bun --filter @toktracker/dashboard build",
+    "test": "bun test",
+    "typecheck": "bun --filter '*' typecheck && tsc -p scripts/tsconfig.json",
+    "check": "ultracite check",
+    "fix": "ultracite fix"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "oxfmt": "^0.60.0",
+    "oxlint": "^1.75.0",
+    "typescript": "latest",
+    "ultracite": "7.9.4"
+  },
+  "packageManager": "bun@1.3.12"
+}

@@ -1,0 +1,12 @@
+{
+  "name": "@toktracker/cli",
+  "version": "0.0.0",
+  "type": "module",
+  "exports": {
+    "./client": "./src/client.ts",
+    "./gateway": "./src/gateway.ts"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json"
+  }
+}

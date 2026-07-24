@@ -1,0 +1,11 @@
+{
+  "$schema": "./.skills.schema.json",
+  "skills": [
+    {
+      "repo": "vercel-labs/agent-browser",
+      "skills": ["agent-browser"],
+    },
+  ],
+  "preinstalledSkills": [],
+  "autoSkills": [],
+}

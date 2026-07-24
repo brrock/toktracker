@@ -1,0 +1,98 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Pi Skills Config",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["skills"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Optional relative path to the JSON schema file"
+    },
+    "skills": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["repo"],
+        "properties": {
+          "repo": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Skills package repo, for example brrock/review-cli"
+          },
+          "skills": {
+            "type": "array",
+            "description": "Optional list of specific skill names to install from the repo",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    },
+    "preinstalledSkills": {
+      "type": "array",
+      "description": "Already-installed skill names to allow through without installing them here",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      },
+      "uniqueItems": true
+    },
+    "autoSkills": {
+      "type": "array",
+      "description": "Enable chosen preinstalled skills when the project matches a built-in detector such as git, node, nextjs, bun, rust, python",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["when", "skills"],
+        "properties": {
+          "when": {
+            "type": "string",
+            "enum": [
+              "git",
+              "node",
+              "bun",
+              "nextjs",
+              "python",
+              "rust",
+              "typescript",
+              "react",
+              "convex",
+              "napi",
+              "tsdown"
+            ]
+          },
+          "skills": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "uniqueItems": true
+          }
+        }
+      }
+    }
+  },
+  "examples": [
+    {
+      "skills": [
+        {
+          "repo": "brrock/review-cli",
+          "skills": ["review-cli"]
+        }
+      ],
+      "preinstalledSkills": ["skill-creator"],
+      "autoSkills": [
+        {
+          "when": "git",
+          "skills": ["git-commit-renamer"]
+        }
+      ]
+    }
+  ]
+}
