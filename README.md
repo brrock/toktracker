@@ -1,5 +1,7 @@
 # TokTracker
 
+https://github.com/user-attachments/assets/62910d7c-d7c3-4211-907e-f88c7b5948fc
+
 **TokTracker is a self-hosted, local-first dashboard for AI coding-agent usage.** It reads the session data already on your machines, estimates or preserves reported costs, and sends the results to a gateway you control.
 
 Run one **gateway** where you want to view the dashboard, then run a lightweight **client** on each computer you want to track.
