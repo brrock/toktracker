@@ -17,7 +17,7 @@ Run one **gateway** where you want to view the dashboard, then run a lightweight
 | --- | --- |
 | Claude Code | JSONL sessions |
 | Codex | JSONL sessions and local titles |
-| Pi and OpenCode Model Provider | JSONL sessions |
+| Pi | JSONL sessions |
 | OpenCode | Legacy JSON and SQLite v1/v2 |
 | Hermes Agent | SQLite |
 | GitHub Copilot | OTEL/CLI JSONL, Desktop SQLite, and VS Code chat sessions |
@@ -46,6 +46,16 @@ Development data is kept in `.dev-data/` and is ignored by Git. Start over with:
 ```bash
 TOKTRACKER_DEV_RESET=1 bun run dev
 ```
+
+### Demo dashboard
+
+To explore the dashboard without local agent sessions, start a self-contained demo with generated mock usage, projects, sessions, and devices:
+
+```bash
+bun run demo
+```
+
+Open **http://localhost:5174**. The demo uses ports `5174` (dashboard) and `4311` (gateway), stores data in `.demo-data/`, and resets that data every time it starts. Override the ports with `TOKTRACKER_DEMO_DASHBOARD_PORT` and `TOKTRACKER_DEMO_GATEWAY_PORT`.
 
 ## Install for everyday use
 

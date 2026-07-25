@@ -9,6 +9,7 @@
   "type": "module",
   "scripts": {
     "dev": "bun scripts/dev.ts",
+    "demo": "bun scripts/demo.ts",
     "setup:gateway": "bun apps/gateway/bin/toktracker-gateway.ts setup",
     "setup:client": "bun apps/client/bin/toktracker-client.ts setup",
     "start:gateway": "bun apps/gateway/bin/toktracker-gateway.ts run-service",

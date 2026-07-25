@@ -3,9 +3,13 @@
   "skills": [
     {
       "repo": "vercel-labs/agent-browser",
-      "skills": ["agent-browser"],
-    },
+      "skills": [
+        "agent-browser"
+      ]
+    }
   ],
-  "preinstalledSkills": [],
-  "autoSkills": [],
+  "preinstalledSkills": [
+    "gpt-image-skill"
+  ],
+  "autoSkills": []
 }
