@@ -97,6 +97,12 @@ Client setup asks for the gateway URL and shared key (leave it blank when the ga
 
 To use prereleases, add `--nightly` on macOS/Linux or `-Nightly` in PowerShell.
 
+### Migrating an existing global installation
+
+Run the current client or gateway install script once instead of using the legacy `update` command. The installer copies the existing Bun-global release unchanged into `installs/<role>/versions/<old-version>`, installs the new release beside it, and records the old release as the rollback target. Configuration and data remain in place.
+
+The updater shipped in `v0.0.1` removes its global package before installing an update, so it cannot preserve itself; the one-time transition must be started with the current install script. After migration, normal `update`, `use`, and `rollback` commands use the versioned installation store.
+
 ### Source checkout setup
 
 From a checkout, use the same interactive setup without installing a release archive:

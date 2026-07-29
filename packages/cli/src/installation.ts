@@ -4,6 +4,7 @@ import {
   mkdir,
   mkdtemp,
   readdir,
+  realpath,
   rename,
   rm,
 } from "node:fs/promises";
@@ -261,6 +262,64 @@ const globalBinDirectory = (): string => {
     throw new Error("Could not locate Bun's global command directory");
   }
   return new TextDecoder().decode(result.stdout).trim();
+};
+
+export const migrateLegacyGlobalInstallation = async (
+  role: ServiceRole
+): Promise<string | undefined> => {
+  const globalBin = globalBinDirectory();
+  const legacyLink = path.resolve(
+    globalBin,
+    "..",
+    "install",
+    "global",
+    "node_modules",
+    "@toktracker",
+    `${role}-cli`
+  );
+  let legacyRoot: string;
+  try {
+    legacyRoot = await realpath(legacyLink);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+
+  const manifest = await readReleaseManifest(legacyRoot);
+  const active = await readActiveInstallation(role);
+  if (
+    !manifest ||
+    manifest.role !== role ||
+    manifest.version === active?.version
+  ) {
+    return undefined;
+  }
+
+  const destination = versionDirectory(role, manifest.version);
+  if (!(await Bun.file(path.join(destination, "release.json")).exists())) {
+    await mkdir(versionsDirectory(role), { recursive: true });
+    const staging = await mkdtemp(
+      path.join(versionsDirectory(role), `.staging-${manifest.version}-`)
+    );
+    try {
+      await cp(legacyRoot, staging, { recursive: true });
+      await validateInstalledVersion(role, manifest.version, staging);
+      await rename(staging, destination);
+    } catch (error) {
+      await rm(staging, { force: true, recursive: true });
+      throw error;
+    }
+  }
+
+  await (active
+    ? writeActiveInstallation(role, {
+        previousVersion: manifest.version,
+        version: active.version,
+      })
+    : activateVersion(role, manifest.version));
+  return manifest.version;
 };
 
 export const ensureLauncher = async (role: ServiceRole): Promise<string> => {

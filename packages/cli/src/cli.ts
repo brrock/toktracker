@@ -1,4 +1,5 @@
-import { setupRole } from "./onboard";
+import { migrateLegacyGlobalInstallation } from "./installation";
+import { installService, setupRole } from "./onboard";
 import { runService } from "./run-service";
 /* eslint-disable complexity, no-nested-ternary */
 // Command dispatch remains centralized so role wrappers expose a consistent CLI.
@@ -197,6 +198,21 @@ export const runCli = async (role: ServiceRole): Promise<void> => {
   const [command, ...args] = process.argv.slice(2);
   if (command === "setup") {
     await setupRole(role);
+    return;
+  }
+  if (command === "complete-install") {
+    await migrateLegacyGlobalInstallation(role);
+    if (await Bun.file(configPath(role)).exists()) {
+      await installService(role);
+      if (!restartService(role)) {
+        throw new Error(`Could not restart TokTracker ${role}`);
+      }
+      console.log(
+        `Migrated TokTracker ${role} to the versioned installation system`
+      );
+    } else {
+      await setupRole(role);
+    }
     return;
   }
   if (command === "run-service") {

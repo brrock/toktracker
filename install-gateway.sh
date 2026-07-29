@@ -86,4 +86,4 @@ if [ ! -r /dev/tty ]; then
   echo "An interactive terminal is required to configure TokTracker." >&2
   exit 1
 fi
-bun "$CLI_PATH" setup </dev/tty
+bun "$CLI_PATH" complete-install </dev/tty

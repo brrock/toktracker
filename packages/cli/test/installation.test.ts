@@ -9,6 +9,7 @@ import {
   ensureLauncher,
   extractVersionArchive,
   installedVersions,
+  migrateLegacyGlobalInstallation,
   readActiveInstallation,
 } from "../src/installation";
 
@@ -86,6 +87,40 @@ describe("versioned installations", () => {
     expect(extractVersionArchive("client", "v1.0.0", archive)).rejects.toThrow(
       "manifest does not match"
     );
+  });
+
+  test("copies a legacy global release without modifying it", async () => {
+    const root = await createRoot();
+    const archive = await createArchive(root, "client", "v2.0.0");
+    await extractVersionArchive("client", "v2.0.0", archive);
+    await activateVersion("client", "v2.0.0");
+
+    const legacyRoot = path.join(
+      root,
+      "install",
+      "global",
+      "node_modules",
+      "@toktracker",
+      "client-cli"
+    );
+    const legacyDist = path.join(legacyRoot, "apps", "client", "dist");
+    await mkdir(legacyDist, { recursive: true });
+    await Bun.write(path.join(legacyDist, "cli.js"), "// legacy cli\n");
+    await Bun.write(path.join(legacyDist, "index.js"), "// legacy service\n");
+    await Bun.write(
+      path.join(legacyRoot, "release.json"),
+      `${JSON.stringify({ repository: "example/repository", role: "client", version: "v1.0.0" })}\n`
+    );
+
+    expect(await migrateLegacyGlobalInstallation("client")).toBe("v1.0.0");
+    expect(await readActiveInstallation("client")).toEqual({
+      previousVersion: "v1.0.0",
+      version: "v2.0.0",
+    });
+    expect(await Bun.file(path.join(legacyDist, "cli.js")).text()).toBe(
+      "// legacy cli\n"
+    );
+    expect(await installedVersions("client")).toEqual(["v1.0.0", "v2.0.0"]);
   });
 
   test("writes a stable launcher and command shim", async () => {

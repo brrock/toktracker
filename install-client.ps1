@@ -79,5 +79,5 @@ try {
 } finally {
   Remove-Item -Recurse -Force $Temporary -ErrorAction SilentlyContinue
 }
-& $Bun.Source $CliPath setup
-if ($LASTEXITCODE -ne 0) { throw "TokTracker client setup failed." }
+& $Bun.Source $CliPath complete-install
+if ($LASTEXITCODE -ne 0) { throw "TokTracker client installation failed." }
