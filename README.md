@@ -15,13 +15,13 @@ Run one **gateway** where you want to view the dashboard, then run a lightweight
 
 ### Supported sources
 
-| Source | Formats |
-| --- | --- |
-| Claude Code | JSONL sessions |
-| Codex | JSONL sessions and local titles |
-| Pi | JSONL sessions |
-| OpenCode | Legacy JSON and SQLite v1/v2 |
-| Hermes Agent | SQLite |
+| Source         | Formats                                                   |
+| -------------- | --------------------------------------------------------- |
+| Claude Code    | JSONL sessions                                            |
+| Codex          | JSONL sessions and local titles                           |
+| Pi             | JSONL sessions                                            |
+| OpenCode       | Legacy JSON and SQLite v1/v2                              |
+| Hermes Agent   | SQLite                                                    |
 | GitHub Copilot | OTEL/CLI JSONL, Desktop SQLite, and VS Code chat sessions |
 
 TokTracker only scans these local agent-data locations. It does not proxy requests to model providers or inspect your editor in real time.
