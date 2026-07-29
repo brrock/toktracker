@@ -10,7 +10,10 @@ export const applicationRoot = (): string =>
   process.env.TOKTRACKER_RUNTIME_ROOT ??
   path.resolve(import.meta.dirname, "..", "..", "..");
 
-const applicationDirectory = (): string => {
+export const applicationDirectory = (): string => {
+  if (process.env.TOKTRACKER_CONFIG_ROOT) {
+    return path.resolve(process.env.TOKTRACKER_CONFIG_ROOT);
+  }
   const home = homedir();
   if (platform() === "win32") {
     return join(

@@ -19,6 +19,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
+import type { FormEvent } from "react";
 import {
   Link as RouterLink,
   Navigate,
@@ -42,6 +43,43 @@ import {
   CommandSeparator,
   CommandShortcut,
 } from "@/components/ui/command";
+
+const AUTH_REQUIRED_EVENT = "toktracker-auth-required";
+let refreshRequest: Promise<boolean> | undefined;
+
+const refreshDashboardSession = (): Promise<boolean> => {
+  refreshRequest ??= (async () => {
+    try {
+      const response = await fetch("/api/v1/auth/refresh", {
+        method: "POST",
+      });
+      return response.ok;
+    } catch {
+      return false;
+    } finally {
+      refreshRequest = undefined;
+    }
+  })();
+  return refreshRequest;
+};
+
+const apiFetch = async (
+  input: RequestInfo | URL,
+  init: RequestInit = {}
+): Promise<Response> => {
+  const response = await fetch(input, init);
+  if (response.status !== 401) {
+    return response;
+  }
+  if (await refreshDashboardSession()) {
+    const retriedResponse = await fetch(input, init);
+    if (retriedResponse.status !== 401) {
+      return retriedResponse;
+    }
+  }
+  window.dispatchEvent(new Event(AUTH_REQUIRED_EVENT));
+  return response;
+};
 
 const EMPTY_HOURLY: DashboardSummary["hourly"] = [];
 
@@ -620,7 +658,7 @@ const CommandPalette = ({
         if (deviceParam) {
           params.set("devices", deviceParam);
         }
-        const response = await fetch(`/api/v1/sessions/search?${params}`, {
+        const response = await apiFetch(`/api/v1/sessions/search?${params}`, {
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -714,13 +752,13 @@ const CommandPalette = ({
             (session) => (
               <CommandItem
                 key={session.id}
-                value={`session ${session.title ?? ""} ${session.project} ${session.id} ${session.model}`}
+                value={`session ${session.title ?? ""} ${session.project} ${session.sessionId} ${session.model}`}
                 onSelect={() =>
                   goTo(`/sessions/${encodeURIComponent(session.id)}`)
                 }
               >
                 <Activity />
-                {session.title ?? session.id}
+                {session.title ?? session.sessionId}
                 <CommandShortcut>{session.project}</CommandShortcut>
               </CommandItem>
             )
@@ -1285,14 +1323,14 @@ const SessionsPage = ({
     const loadSessions = async (): Promise<void> => {
       setLoading(true);
       try {
-        const params = new URLSearchParams({ limit: "all" });
+        const params = new URLSearchParams({ limit: "200" });
         if (deviceParam) {
           params.set("devices", deviceParam);
         }
         if (agentParam) {
           params.set("agents", agentParam);
         }
-        const response = await fetch(`/api/v1/sessions/search?${params}`, {
+        const response = await apiFetch(`/api/v1/sessions/search?${params}`, {
           signal: controller.signal,
         });
         if (!response.ok) {
@@ -1328,7 +1366,7 @@ const SessionsPage = ({
     matchesQuery(
       [
         session.title ?? "",
-        session.id,
+        session.sessionId,
         session.project,
         session.model,
         session.client,
@@ -1384,7 +1422,7 @@ const SessionPage = ({
         if (deviceParam) {
           params.set("devices", deviceParam);
         }
-        const response = await fetch(
+        const response = await apiFetch(
           `/api/v1/sessions/${encodeURIComponent(id)}?${params}`,
           { signal: controller.signal }
         );
@@ -1416,8 +1454,8 @@ const SessionPage = ({
   }
   return (
     <PageHeading
-      title={session.title ?? session.id}
-      description={`${session.project} · ${session.id}`}
+      title={session.title ?? session.sessionId}
+      description={`${session.project} · ${session.sessionId}`}
     >
       <section className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Stat
@@ -1562,7 +1600,7 @@ const SessionTable = ({
                   to={`/sessions/${encodeURIComponent(session.id)}`}
                   className="font-medium hover:text-primary"
                 >
-                  {session.title ?? session.id}
+                  {session.title ?? session.sessionId}
                 </Link>
                 <div className="max-w-56 truncate text-xs text-muted-foreground">
                   {session.project}
@@ -1603,6 +1641,13 @@ const App = () => {
   const [overviewData, setOverviewData] = useState(EMPTY_SUMMARY);
   const [loading, setLoading] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [authRequired, setAuthRequired] = useState(false);
+  const [pairingCode, setPairingCode] = useState("");
+  const [deviceName, setDeviceName] = useState(
+    `${navigator.platform || "Browser"} dashboard`
+  );
+  const [pairingError, setPairingError] = useState("");
+  const [pairing, setPairing] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const requestedRange = searchParams.get("range");
@@ -1629,6 +1674,13 @@ const App = () => {
   );
 
   useEffect(() => {
+    const requireAuthentication = (): void => setAuthRequired(true);
+    window.addEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
+    return () =>
+      window.removeEventListener(AUTH_REQUIRED_EVENT, requireAuthentication);
+  }, []);
+
+  useEffect(() => {
     if (location.pathname === "/" && requestedRange !== range) {
       updateSearchParam("range", range);
       return;
@@ -1643,16 +1695,19 @@ const App = () => {
     const loadSummary = async (): Promise<void> => {
       try {
         const overviewRequest = new URLSearchParams({ range });
-        const globalRequest = new URLSearchParams({ range: "all" });
+        const globalRequest = new URLSearchParams({
+          includeAllDevices: "true",
+          range: "all",
+        });
         if (deviceParam) {
           overviewRequest.set("devices", deviceParam);
           globalRequest.set("devices", deviceParam);
         }
         const [overviewResponse, globalResponse] = await Promise.all([
-          fetch(`/api/v1/summary?${overviewRequest}`, {
+          apiFetch(`/api/v1/summary?${overviewRequest}`, {
             signal: controller.signal,
           }),
-          fetch(`/api/v1/summary?${globalRequest}`, {
+          apiFetch(`/api/v1/summary?${globalRequest}`, {
             signal: controller.signal,
           }),
         ]);
@@ -1718,8 +1773,85 @@ const App = () => {
       pageTitle === "TokTracker" ? pageTitle : `${pageTitle} | TokTracker`;
   }, [pageTitle]);
 
+  const submitPairingCode = async (
+    event: FormEvent<HTMLFormElement>
+  ): Promise<void> => {
+    event.preventDefault();
+    setPairing(true);
+    setPairingError("");
+    try {
+      const response = await fetch("/api/v1/auth/pair", {
+        body: JSON.stringify({ code: pairingCode, deviceName }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => null)) as {
+          error?: string;
+        } | null;
+        setPairingError(body?.error ?? "Could not pair this device.");
+        return;
+      }
+      window.location.reload();
+    } catch {
+      setPairingError("Could not reach the gateway.");
+    } finally {
+      setPairing(false);
+    }
+  };
+
   return (
     <div className="min-h-screen bg-background text-foreground">
+      {authRequired && (
+        <div className="fixed inset-0 z-50 grid place-items-center bg-background/90 p-4 backdrop-blur">
+          <form
+            className="w-full max-w-sm space-y-4 rounded-lg border bg-card p-6 shadow-xl"
+            onSubmit={submitPairingCode}
+          >
+            <div>
+              <h1 className="text-lg font-semibold">Pair this device</h1>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Run <code>toktracker-gateway auth code</code> on the gateway,
+                then enter the one-time code below.
+              </p>
+            </div>
+            <label className="block space-y-1 text-sm font-medium">
+              <span>Device name</span>
+              <input
+                autoComplete="name"
+                className="h-10 w-full rounded-md border bg-background px-3"
+                maxLength={128}
+                onChange={(event) => setDeviceName(event.target.value)}
+                required
+                value={deviceName}
+              />
+            </label>
+            <label className="block space-y-1 text-sm font-medium">
+              <span>Pairing code</span>
+              <input
+                autoCapitalize="characters"
+                autoComplete="one-time-code"
+                className="h-10 w-full rounded-md border bg-background px-3 font-mono uppercase tracking-wider"
+                maxLength={64}
+                onChange={(event) => setPairingCode(event.target.value)}
+                placeholder="XXXX-XXXX-XXXX-XXXX"
+                required
+                value={pairingCode}
+              />
+            </label>
+            {pairingError && (
+              <p className="text-sm text-destructive">{pairingError}</p>
+            )}
+            <button
+              className="h-10 w-full rounded-md bg-primary px-4 font-medium text-primary-foreground disabled:opacity-50"
+              disabled={pairing}
+              type="submit"
+            >
+              {pairing ? "Pairing…" : "Pair device"}
+            </button>
+          </form>
+        </div>
+      )}
       <CommandPalette
         data={data}
         deviceParam={deviceParam}

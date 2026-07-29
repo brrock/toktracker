@@ -57,7 +57,7 @@ To explore the dashboard without local agent sessions, start a self-contained de
 bun run demo
 ```
 
-Open **http://localhost:5174**. The demo uses ports `5174` (dashboard) and `4311` (gateway), stores data in `.demo-data/`, and resets that data every time it starts. Override the ports with `TOKTRACKER_DEMO_DASHBOARD_PORT` and `TOKTRACKER_DEMO_GATEWAY_PORT`.
+Open **http://localhost:5174** and enter the pairing code printed by the demo command. The demo uses ports `5174` (dashboard) and `4311` (gateway), stores data in `.demo-data/`, and resets that data every time it starts. Override the ports with `TOKTRACKER_DEMO_DASHBOARD_PORT` and `TOKTRACKER_DEMO_GATEWAY_PORT`.
 
 ## Install for everyday use
 
@@ -75,9 +75,11 @@ curl -fsSL https://raw.githubusercontent.com/brrock/toktracker/main/install-gate
 irm https://raw.githubusercontent.com/brrock/toktracker/main/install-gateway.ps1 | iex
 ```
 
-The installer downloads the current release, installs `toktracker-gateway` globally, and launches its interactive setup. Setup lets you choose a port (default `3000`), optionally create a shared ingestion key, and installs a background service.
+The installer verifies the release checksum, extracts a versioned `toktracker-gateway` installation, and launches its interactive setup. Setup lets you choose a port (default `3000`) and installs a background service. The gateway listens only on `127.0.0.1` by default.
 
-When setup finishes, it prints localhost and LAN addresses. Open one in a browser to use the dashboard. Keep the printed key if you enabled it—you will need it for clients.
+LAN access is an explicit setup choice and always generates or requires a shared ingestion key. When enabled, setup prints LAN addresses and a warning about firewalling the port. Keep the printed key—you will need it when setting up clients.
+
+The dashboard uses per-device pairing instead of the ingestion key. On the gateway, run `toktracker-gateway auth code`, open the dashboard, and enter the one-time code. The browser remains signed in through automatically rotated, HttpOnly session cookies.
 
 ### 2. Set up a client
 
@@ -126,9 +128,13 @@ toktracker-client config set gateway-url http://server:3000
 toktracker-client config set interval-ms 120000
 toktracker-client config unset encryption-key
 
-# Update or choose an update channel
+# Update, downgrade, or choose an update channel
 toktracker-gateway update
 toktracker-client update --nightly
+toktracker-client update --version v0.1.0
+toktracker-client versions
+toktracker-client use v0.1.0
+toktracker-client rollback
 toktracker-client channel nightly
 ```
 
@@ -142,13 +148,23 @@ A client validates a new gateway URL before saving it. Use `--skip-check` only w
 | macOS | `~/Library/Application Support/TokTracker` | `~/Library/Application Support/TokTracker` |
 | Windows | `%APPDATA%\TokTracker` | `%LOCALAPPDATA%\TokTracker` |
 
+Release installers extract each release under `installs/<role>/versions/<version>` in the configuration directory. A stable launcher selects the version recorded in `active.json`, so updates switch versions atomically and restore the previous version when startup verification fails. Installed versions remain available for explicit downgrades and `rollback`.
+
 The client keeps its scan index and cached pricing data locally. The gateway stores its SQLite database in its data directory.
 
 ## Security and networking
 
-Enabling a shared key encrypts **client ingestion payloads** with AES-256-GCM and requires that key as a Bearer credential for ingestion. Treat the key as a secret.
+A shared ingestion key encrypts **client ingestion payloads** with AES-256-GCM and authorizes only client health checks and ingestion. Dashboard users never receive that key. Each browser pairs once with a short-lived, single-use code and receives rotating access and refresh credentials in HttpOnly, SameSite cookies.
 
-The gateway listens on all interfaces by default, and the dashboard/read APIs are not access-controlled by TokTracker. For a gateway reachable beyond a trusted private network, put it behind an authenticated HTTPS reverse proxy or restrict network access with your firewall. HTTPS is especially important when clients connect over an untrusted network.
+Manage paired dashboard devices from the gateway:
+
+```bash
+toktracker-gateway auth code                 # Create a 10-minute pairing code
+toktracker-gateway auth devices              # List paired browsers
+toktracker-gateway auth revoke <device-id>   # Sign out one browser
+```
+
+The gateway listens on `127.0.0.1` by default. Binding `HOST` to a non-loopback address requires `TOKTRACKER_API_KEY`; setup makes this an explicit LAN-access choice and prints a warning. HTTPS and firewall restrictions are still strongly recommended outside a trusted private network. Cross-origin API access is disabled by default; set `TOKTRACKER_CORS_ORIGIN` to one exact trusted origin when needed.
 
 ## How syncing works
 
@@ -158,7 +174,7 @@ The client scans supported session stores on a schedule (default: once per minut
 - JSON and JSONL sources use source-level replacement, so a changed source is uploaded as its current complete view.
 - Pricing catalogs are cached locally for 24 hours. Set `TOKTRACKER_DISABLE_PRICING=1` to disable pricing lookups.
 
-Useful runtime environment variables include `TOKTRACKER_GATEWAY`, `TOKTRACKER_API_KEY`, `TOKTRACKER_INTERVAL_MS`, `TOKTRACKER_DATA_DIR`, `TOKTRACKER_DB`, `PORT`, and `HOST`.
+Useful runtime environment variables include `TOKTRACKER_GATEWAY`, `TOKTRACKER_API_KEY`, `TOKTRACKER_INTERVAL_MS`, `TOKTRACKER_DATA_DIR`, `TOKTRACKER_DB`, `TOKTRACKER_CORS_ORIGIN`, `PORT`, and `HOST`.
 
 ## Development
 

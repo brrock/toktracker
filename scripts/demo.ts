@@ -1,6 +1,7 @@
 import { mkdir, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { Store } from "../apps/gateway/src/store";
 import { createDemoPayloads } from "./demo-data";
 
 const repositoryRoot = path.resolve(import.meta.dirname, "..");
@@ -63,9 +64,13 @@ const seedPayload = async (
   }
 };
 
+let pairingCode = "";
 try {
   await waitForGateway();
   await Promise.all(createDemoPayloads().map(seedPayload));
+  const store = new Store(environment.TOKTRACKER_DB);
+  pairingCode = store.createDashboardPairingCode().code;
+  store.close();
 } catch (error) {
   for (const child of processes) {
     child.kill();
@@ -79,6 +84,7 @@ process.stdout.write(
     `  Dashboard: http://localhost:${dashboardPort}`,
     `  Gateway:   ${gatewayUrl}`,
     `  Data:      ${demoData}`,
+    `  Pairing code: ${pairingCode}`,
     "  Stop with Ctrl+C. Demo data is reset on every start.",
     "",
   ].join("\n")

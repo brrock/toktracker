@@ -4,7 +4,13 @@ import { runService } from "./run-service";
 // Command dispatch remains centralized so role wrappers expose a consistent CLI.
 import { configPath, readConfig, writeConfig } from "./runtime-config";
 import type { ServiceRole } from "./runtime-config";
-import { restartService, updateRole } from "./update";
+import {
+  listInstalledVersions,
+  restartService,
+  rollbackRole,
+  switchInstalledVersion,
+  updateRole,
+} from "./update";
 
 interface ConfigField {
   environmentKey: string;
@@ -85,8 +91,18 @@ const usage = (role: ServiceRole): never => {
       `  ${executable} config get <name>`,
       `  ${executable} config set <name> <value> [--no-restart]`,
       `  ${executable} config unset <name> [--no-restart]`,
-      `  ${executable} update [--nightly|--stable] [--force]`,
+      `  ${executable} update [--nightly|--stable] [--version <tag>] [--force]`,
+      `  ${executable} versions`,
+      `  ${executable} use <version>`,
+      `  ${executable} rollback`,
       `  ${executable} channel <stable|nightly>`,
+      ...(role === "gateway"
+        ? [
+            `  ${executable} auth code`,
+            `  ${executable} auth devices`,
+            `  ${executable} auth revoke <device-id>`,
+          ]
+        : []),
     ].join("\n")
   );
 };
@@ -207,7 +223,35 @@ export const runCli = async (role: ServiceRole): Promise<void> => {
       : args.includes("--stable")
         ? "stable"
         : undefined;
-    await updateRole(role, selectedChannel, args.includes("--force"));
+    const versionFlagIndex = args.indexOf("--version");
+    const requestedVersion =
+      versionFlagIndex === -1 ? undefined : args[versionFlagIndex + 1];
+    if (versionFlagIndex !== -1 && !requestedVersion) {
+      throw new Error("--version requires a release tag");
+    }
+    await updateRole(
+      role,
+      selectedChannel,
+      args.includes("--force"),
+      requestedVersion
+    );
+    return;
+  }
+  if (command === "versions") {
+    await listInstalledVersions(role);
+    return;
+  }
+  if (command === "use") {
+    const [version] = args;
+    if (!version) {
+      throw new Error("A version is required");
+    }
+    await switchInstalledVersion(role, version);
+    console.log(`Activated TokTracker ${role} ${version}`);
+    return;
+  }
+  if (command === "rollback") {
+    await rollbackRole(role);
     return;
   }
   usage(role);

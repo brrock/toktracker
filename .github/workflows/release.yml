@@ -116,6 +116,9 @@ jobs:
           mkdir -p release
           bun scripts/package-release.ts client "$VERSION" "$REPOSITORY" "release/toktracker-client-$VERSION.tgz"
           bun scripts/package-release.ts gateway "$VERSION" "$REPOSITORY" "release/toktracker-gateway-$VERSION.tgz"
+          for archive in release/*.tgz; do
+            sha256sum "$archive" > "$archive.sha256"
+          done
 
       - name: Create GitHub release
         env:

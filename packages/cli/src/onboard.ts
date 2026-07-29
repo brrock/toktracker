@@ -6,7 +6,9 @@ import path from "node:path";
 import { createInterface } from "node:readline/promises";
 import type { Interface } from "node:readline/promises";
 
+import { ensureLauncher, readActiveInstallation } from "./installation";
 import {
+  applicationDirectory,
   applicationRoot,
   configPath,
   dataDirectory,
@@ -15,11 +17,6 @@ import {
 import type { ServiceRole } from "./runtime-config";
 
 const { join } = path;
-const repositoryRoot = applicationRoot();
-const [, cliPath] = process.argv;
-if (!cliPath) {
-  throw new Error("Could not determine the TokTracker CLI path");
-}
 let terminal: Interface | undefined;
 
 const ask = async (question: string, fallback?: string): Promise<string> => {
@@ -61,15 +58,28 @@ const run = (command: string[]): boolean => {
   return result.exitCode === 0;
 };
 
-const installService = async (serviceRole: ServiceRole): Promise<void> => {
+export const installService = async (
+  serviceRole: ServiceRole
+): Promise<void> => {
   const serviceName = `toktracker-${serviceRole}`;
+  const activeInstallation = await readActiveInstallation(serviceRole);
+  const [, currentCliPath] = process.argv;
+  if (!currentCliPath) {
+    throw new Error("Could not determine the TokTracker CLI path");
+  }
+  const serviceEntrypoint = activeInstallation
+    ? await ensureLauncher(serviceRole)
+    : currentCliPath;
+  const workingDirectory = activeInstallation
+    ? applicationDirectory()
+    : applicationRoot();
   if (platform() === "linux") {
     const unitDirectory = join(homedir(), ".config", "systemd", "user");
     const unitPath = join(unitDirectory, `${serviceName}.service`);
     await mkdir(unitDirectory, { recursive: true });
     await Bun.write(
       unitPath,
-      `[Unit]\nDescription=TokTracker ${serviceRole}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${systemdEscape(repositoryRoot)}\nExecStart=${systemdEscape(process.execPath)} ${systemdEscape(cliPath)} run-service\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`
+      `[Unit]\nDescription=TokTracker ${serviceRole}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${systemdEscape(workingDirectory)}\nExecStart=${systemdEscape(process.execPath)} ${systemdEscape(serviceEntrypoint)} run-service\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`
     );
     const installed =
       run(["systemctl", "--user", "daemon-reload"]) &&
@@ -88,7 +98,7 @@ const installService = async (serviceRole: ServiceRole): Promise<void> => {
     await mkdir(agentsDirectory, { recursive: true });
     await Bun.write(
       plistPath,
-      `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${label}</string>\n<key>ProgramArguments</key><array><string>${xmlEscape(process.execPath)}</string><string>${xmlEscape(cliPath)}</string><string>run-service</string></array>\n<key>WorkingDirectory</key><string>${xmlEscape(repositoryRoot)}</string>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n</dict></plist>\n`
+      `<?xml version="1.0" encoding="UTF-8"?>\n<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n<plist version="1.0"><dict>\n<key>Label</key><string>${label}</string>\n<key>ProgramArguments</key><array><string>${xmlEscape(process.execPath)}</string><string>${xmlEscape(serviceEntrypoint)}</string><string>run-service</string></array>\n<key>WorkingDirectory</key><string>${xmlEscape(workingDirectory)}</string>\n<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>\n</dict></plist>\n`
     );
     const domain = `gui/${process.getuid?.() ?? 501}`;
     Bun.spawnSync(["launchctl", "bootout", domain, plistPath]);
@@ -101,7 +111,7 @@ const installService = async (serviceRole: ServiceRole): Promise<void> => {
 
   if (platform() === "win32") {
     const taskName = `TokTracker ${serviceRole}`;
-    const taskCommand = `"${process.execPath}" "${cliPath}" run-service`;
+    const taskCommand = `"${process.execPath}" "${serviceEntrypoint}" run-service`;
     const created = run([
       "schtasks.exe",
       "/Create",
@@ -153,9 +163,24 @@ const setupGateway = async (): Promise<void> => {
   if (!/^\d+$/u.test(port) || Number(port) < 1 || Number(port) > 65_535) {
     throw new Error("Port must be between 1 and 65535");
   }
+  const exposeToLan = await confirm(
+    "Expose the gateway to other devices on your LAN",
+    false
+  );
+  if (exposeToLan) {
+    console.log(
+      "Warning: LAN access exposes usage metadata. Firewall the port and keep the generated key private."
+    );
+  }
   let accessKey = "";
-  if (await confirm("Encrypt client uploads with a shared key", false)) {
-    accessKey = await ask("Encryption key (leave blank to generate)");
+  if (
+    exposeToLan ||
+    (await confirm(
+      "Protect and encrypt client ingestion with a shared key",
+      false
+    ))
+  ) {
+    accessKey = await ask("Client ingestion key (leave blank to generate)");
     accessKey ||=
       crypto.randomUUID().replaceAll("-", "") +
       crypto.randomUUID().replaceAll("-", "");
@@ -167,6 +192,7 @@ const setupGateway = async (): Promise<void> => {
     ? "nightly"
     : "stable";
   const config = await writeConfig("gateway", {
+    HOST: exposeToLan ? "0.0.0.0" : "127.0.0.1",
     PORT: port,
     TOKTRACKER_API_KEY: accessKey,
     TOKTRACKER_DB: join(dataDirectory("gateway"), "toktracker.db"),
@@ -174,10 +200,12 @@ const setupGateway = async (): Promise<void> => {
   });
   await installService("gateway");
   const addresses = new Set<string>([`http://localhost:${port}`]);
-  for (const entries of Object.values(networkInterfaces())) {
-    for (const entry of entries ?? []) {
-      if (entry.family === "IPv4" && !entry.internal) {
-        addresses.add(`http://${entry.address}:${port}`);
+  if (exposeToLan) {
+    for (const entries of Object.values(networkInterfaces())) {
+      for (const entry of entries ?? []) {
+        if (entry.family === "IPv4" && !entry.internal) {
+          addresses.add(`http://${entry.address}:${port}`);
+        }
       }
     }
   }
@@ -187,7 +215,7 @@ const setupGateway = async (): Promise<void> => {
     console.log(`  ${address}`);
   }
   if (accessKey) {
-    console.log(`Encryption key: ${accessKey}`);
+    console.log(`Client ingestion key: ${accessKey}`);
   }
 };
 
