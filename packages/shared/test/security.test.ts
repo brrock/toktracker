@@ -73,5 +73,19 @@ describe("ingestion security", () => {
       sourceUpdate.mode = "unsafe";
     }
     expect(isIngestRequest(invalidUpdate)).toBe(false);
+
+    const replaceWithRemovals = validPayload();
+    const [replaceUpdate] = replaceWithRemovals.sourceUpdates;
+    if (replaceUpdate) {
+      Object.assign(replaceUpdate, { removedSessionIds: [] });
+    }
+    expect(isIngestRequest(replaceWithRemovals)).toBe(false);
+
+    const patchWithRemovals = validPayload();
+    const [patchUpdate] = patchWithRemovals.sourceUpdates;
+    if (patchUpdate) {
+      Object.assign(patchUpdate, { mode: "patch", removedSessionIds: [] });
+    }
+    expect(isIngestRequest(patchWithRemovals)).toBe(true);
   });
 });

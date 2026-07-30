@@ -5,7 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { hostname, platform } from "node:os";
 import { join, dirname } from "node:path";
 
-import { encryptPayload } from "@toktracker/shared";
+import { encryptPayload, isIngestRequest } from "@toktracker/shared";
 import type {
   IngestRequest,
   SessionSnapshot,
@@ -32,6 +32,13 @@ const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const INDEX_SCHEMA_VERSION = 3;
+const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
+// AES-GCM payloads are base64 encoded, so leave room for that expansion.
+const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
+const MAX_BATCH_UNENCRYPTED_BYTES = 15 * 1024 * 1024;
+const MAX_BATCH_SESSIONS = 10_000;
+const MAX_BATCH_MESSAGES = 100_000;
+const MAX_BATCH_SOURCE_UPDATES = 10_000;
 
 const cleanSessionTitle = (value: unknown): string | undefined => {
   if (typeof value !== "string") {
@@ -387,7 +394,9 @@ async function changedSessions(): Promise<SyncPlan> {
         : [];
       plan.sourceUpdates.push({
         mode: incremental ? "patch" : "replace",
-        removedSessionIds: removed,
+        ...(incremental && removed.length > 0
+          ? { removedSessionIds: removed }
+          : {}),
         sourcePath: source.path,
       });
       for (const [sessionId, list] of grouped) {
@@ -437,6 +446,152 @@ function commit(plan: SyncPlan) {
   })();
 }
 
+const byteLength = (value: unknown) =>
+  new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+const validatePayload = (payload: IngestRequest): void => {
+  const candidatePayload: unknown = payload;
+  if (isIngestRequest(candidatePayload)) {
+    return;
+  }
+  for (const session of payload.sessions) {
+    const candidate: unknown = { device: payload.device, sessions: [session] };
+    if (!isIngestRequest(candidate)) {
+      for (const [messageIndex, message] of session.messages.entries()) {
+        const messageCandidate: unknown = {
+          device: payload.device,
+          sessions: [{ ...session, messages: [message] }],
+        };
+        if (!isIngestRequest(messageCandidate)) {
+          throw new Error(
+            `Invalid ingestion message ${messageIndex} in session ${session.sessionId} from ${session.sourcePath}`
+          );
+        }
+      }
+      throw new Error(
+        `Invalid ingestion session ${session.sessionId} from ${session.sourcePath}`
+      );
+    }
+  }
+  const deviceCandidate: unknown = { device: payload.device, sessions: [] };
+  if (!isIngestRequest(deviceCandidate)) {
+    throw new Error("Invalid ingestion device metadata");
+  }
+  for (const sourceUpdate of payload.sourceUpdates ?? []) {
+    const updateCandidate: unknown = {
+      device: payload.device,
+      sessions: [],
+      sourceUpdates: [sourceUpdate],
+    };
+    if (!isIngestRequest(updateCandidate)) {
+      throw new Error(
+        `Invalid ingestion source update for ${sourceUpdate.sourcePath} (${sourceUpdate.removedSessionIds?.length ?? 0} removals)`
+      );
+    }
+  }
+  throw new Error("Invalid ingestion payload limits");
+};
+
+async function upload(payload: IngestRequest, accessKey?: string) {
+  validatePayload(payload);
+  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
+  const requestPayload = accessKey
+    ? await encryptPayload(payload, accessKey)
+    : payload;
+  const requestBody = JSON.stringify(requestPayload);
+  if (
+    new TextEncoder().encode(requestBody).byteLength > MAX_GATEWAY_BODY_BYTES
+  ) {
+    throw new Error("A single ingestion batch exceeds the gateway body limit");
+  }
+  const response = await fetch(`${endpoint}/api/v1/ingest`, {
+    body: requestBody,
+    headers: {
+      "content-type": "application/json",
+      ...(accessKey ? { authorization: `Bearer ${accessKey}` } : {}),
+    },
+    method: "POST",
+  });
+  if (!response.ok) {
+    throw new Error(
+      `Gateway rejected upload: ${response.status} ${await response.text()}`
+    );
+  }
+}
+
+async function uploadPlan(plan: SyncPlan) {
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  const maxBatchBytes = accessKey
+    ? MAX_BATCH_PLAINTEXT_BYTES
+    : MAX_BATCH_UNENCRYPTED_BYTES;
+  const device = {
+    id: deviceId!,
+    name: process.env.TOKTRACKER_DEVICE_NAME ?? hostname(),
+    platform: platform(),
+  };
+  const sessionsBySource = new Map<string, SessionSnapshot[]>();
+  for (const session of plan.sessions) {
+    const sessions = sessionsBySource.get(session.sourcePath) ?? [];
+    sessions.push(session);
+    sessionsBySource.set(session.sourcePath, sessions);
+  }
+  let batch: IngestRequest = { device, sessions: [], sourceUpdates: [] };
+  let batchMessageCount = 0;
+  const flush = async () => {
+    if (batch.sessions.length === 0 && batch.sourceUpdates?.length === 0) {
+      return;
+    }
+    await upload(batch, accessKey);
+    batch = { device, sessions: [], sourceUpdates: [] };
+    batchMessageCount = 0;
+  };
+  const appendToBatch = (
+    current: IngestRequest,
+    session?: SessionSnapshot,
+    sourceUpdate?: NonNullable<IngestRequest["sourceUpdates"]>[number]
+  ): IngestRequest => ({
+    device,
+    sessions: session ? [...current.sessions, session] : current.sessions,
+    sourceUpdates: sourceUpdate
+      ? [...(current.sourceUpdates ?? []), sourceUpdate]
+      : current.sourceUpdates,
+  });
+  const fitsBatch = (candidate: IngestRequest, messageCount: number) =>
+    candidate.sessions.length <= MAX_BATCH_SESSIONS &&
+    messageCount <= MAX_BATCH_MESSAGES &&
+    (candidate.sourceUpdates?.length ?? 0) <= MAX_BATCH_SOURCE_UPDATES &&
+    byteLength(candidate) <= maxBatchBytes;
+  const add = async (
+    session?: SessionSnapshot,
+    sourceUpdate?: NonNullable<IngestRequest["sourceUpdates"]>[number]
+  ) => {
+    const messageCount = session?.messages.length ?? 0;
+    const candidate = appendToBatch(batch, session, sourceUpdate);
+    if (!fitsBatch(candidate, batchMessageCount + messageCount)) {
+      await flush();
+      const single = appendToBatch(batch, session, sourceUpdate);
+      if (!fitsBatch(single, messageCount)) {
+        throw new Error(
+          `Session ${session?.sessionId ?? sourceUpdate?.sourcePath} exceeds the ingestion batch limit`
+        );
+      }
+    }
+    batch = appendToBatch(batch, session, sourceUpdate);
+    batchMessageCount += messageCount;
+  };
+  for (const sourceUpdate of plan.sourceUpdates) {
+    const sessions = sessionsBySource.get(sourceUpdate.sourcePath) ?? [];
+    if (sessions.length === 0) {
+      await add(undefined, sourceUpdate);
+      continue;
+    }
+    for (const [index, session] of sessions.entries()) {
+      await add(session, index === 0 ? sourceUpdate : undefined);
+    }
+  }
+  await flush();
+}
+
 async function sync() {
   const plan = await changedSessions();
   const mustContactGateway =
@@ -450,33 +605,7 @@ async function sync() {
     console.log("TokTracker: no changed sessions");
     return;
   }
-  const payload: IngestRequest = {
-    device: {
-      id: deviceId!,
-      name: process.env.TOKTRACKER_DEVICE_NAME ?? hostname(),
-      platform: platform(),
-    },
-    sessions: plan.sessions,
-    sourceUpdates: plan.sourceUpdates,
-  };
-  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
-  const accessKey = process.env.TOKTRACKER_API_KEY;
-  const requestBody = accessKey
-    ? await encryptPayload(payload, accessKey)
-    : payload;
-  const response = await fetch(`${endpoint}/api/v1/ingest`, {
-    body: JSON.stringify(requestBody),
-    headers: {
-      "content-type": "application/json",
-      ...(accessKey ? { authorization: `Bearer ${accessKey}` } : {}),
-    },
-    method: "POST",
-  });
-  if (!response.ok) {
-    throw new Error(
-      `Gateway rejected upload: ${response.status} ${await response.text()}`
-    );
-  }
+  await uploadPlan(plan);
   commit(plan);
   console.log(
     `TokTracker: uploaded ${plan.sessions.length} changed session(s)`
