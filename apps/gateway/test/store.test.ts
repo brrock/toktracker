@@ -19,7 +19,8 @@ const createStore = async (): Promise<{ dbPath: string; store: Store }> => {
 
 const message = (
   sessionId: string,
-  timestamp = 1_700_000_000_000
+  timestamp = 1_700_000_000_000,
+  sessionTitle?: string
 ): UsageMessage => ({
   client: "codex",
   cost: 0.01,
@@ -30,6 +31,7 @@ const message = (
   modelId: "gpt-5",
   providerId: "openai",
   sessionId,
+  sessionTitle,
   timestamp,
   tokens: { cacheRead: 0, cacheWrite: 0, input: 10, output: 5, reasoning: 0 },
 });
@@ -38,13 +40,14 @@ const payload = (
   deviceId: string,
   sourcePath: string,
   sessionId: string,
-  timestamp?: number
+  timestamp?: number,
+  sessionTitle?: string
 ): IngestRequest => ({
   device: { id: deviceId, name: deviceId, platform: "test" },
   sessions: [
     {
       deviceId,
-      messages: [message(sessionId, timestamp)],
+      messages: [message(sessionId, timestamp, sessionTitle)],
       sessionId,
       sourceMtimeMs: 1,
       sourcePath,
@@ -103,6 +106,25 @@ describe("Store", () => {
     expect(
       store.sessions("", [], [], 20).map((session) => session.sessionId)
     ).toEqual(["three"]);
+    store.close();
+  });
+
+  test("removes Synara host context from session titles", async () => {
+    const { store } = await createStore();
+    store.ingest(
+      payload(
+        "device",
+        "/source.db",
+        "session",
+        undefined,
+        "<synara_host_context>private instructions</synara_host_context>Visible session"
+      )
+    );
+
+    expect(store.sessions("", [], [], 20)[0]?.title).toBe("Visible session");
+    expect(store.summary([], "all").recentSessions[0]?.title).toBe(
+      "Visible session"
+    );
     store.close();
   });
 

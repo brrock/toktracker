@@ -19,6 +19,8 @@ const pad = (value: number): string => value.toString().padStart(2, "0");
 const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
+const SYNARA_HOST_CONTEXT =
+  /<synara_host_context>[\s\S]*?<\/synara_host_context>/giu;
 
 const hashSecret = (value: string): string =>
   new Bun.CryptoHasher("sha256").update(value).digest("hex");
@@ -101,11 +103,17 @@ const appendGroup = (
   }
 };
 
+const cleanSessionTitle = (title: string | undefined): string | undefined => {
+  const cleaned = title?.replaceAll(SYNARA_HOST_CONTEXT, "").trim();
+  return cleaned || undefined;
+};
+
 const withProject = (
   message: UsageMessage,
   storedProject: string | null
 ): UsageMessage => ({
   ...message,
+  sessionTitle: cleanSessionTitle(message.sessionTitle),
   workspaceLabel: isHermesMessage(message)
     ? undefined
     : (message.workspaceLabel ?? storedProject ?? undefined),
@@ -332,7 +340,12 @@ export class Store {
           s.sourceSize,
           s.sessionId,
           s.project ?? null,
-          JSON.stringify(s.messages),
+          JSON.stringify(
+            s.messages.map((message) => ({
+              ...message,
+              sessionTitle: cleanSessionTitle(message.sessionTitle),
+            }))
+          ),
           now
         );
       }
