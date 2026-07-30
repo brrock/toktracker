@@ -172,15 +172,22 @@ jobs:
 
           changelog_path="$(mktemp)"
           trap 'rm -f "$changelog_path"' EXIT
+          changelog_target="${{ steps.target.outputs.sha }}"
+          if [[ "$(git log -1 --format=%s "$changelog_target")" =~ ^chore\(release\):\ v ]]; then
+            changelog_target="${changelog_target}^"
+          fi
           changelog_args=(
-            --to "${{ steps.target.outputs.sha }}"
+            --to "$changelog_target"
             --output "$changelog_path"
+            --r "${TAG#v}"
+            --noAuthors
           )
-          previous_tag="$(git describe --tags --abbrev=0 "${{ steps.target.outputs.sha }}^" 2>/dev/null || true)"
+          previous_tag="$(git describe --tags --abbrev=0 "$changelog_target^" 2>/dev/null || true)"
           if [[ -n "$previous_tag" ]]; then
             changelog_args+=(--from "$previous_tag")
           fi
           bunx changelogen@0.6.2 "${changelog_args[@]}"
+          bun scripts/add-changelog-authors.ts "$changelog_path"
           changelog_notes="$(<"$changelog_path")"
           release_notes="$install_notes
 
