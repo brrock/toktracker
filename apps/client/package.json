@@ -1,6 +1,6 @@
 {
   "name": "@toktracker/client",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/index.ts",
