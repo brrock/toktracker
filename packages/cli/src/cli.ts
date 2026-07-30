@@ -214,7 +214,12 @@ const runConfigCommand = async (
 
 export const runCli = async (role: ServiceRole): Promise<void> => {
   const [command, ...args] = process.argv.slice(2);
-  if (command === "--help" || command === "-h" || args.includes("--help")) {
+  if (
+    !command ||
+    command === "--help" ||
+    command === "-h" ||
+    args.includes("--help")
+  ) {
     console.log(usageText(role));
     return;
   }
