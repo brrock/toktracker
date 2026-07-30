@@ -189,9 +189,23 @@ jobs:
           bunx changelogen@0.6.2 "${changelog_args[@]}"
           bun scripts/add-changelog-authors.ts "$changelog_path"
           changelog_notes="$(<"$changelog_path")"
-          release_notes="$changelog_notes
+          changelog_header="${changelog_notes%%$'\n'*}"
+          changelog_body="${changelog_notes#*$'\n'}"
+          compare_changes=""
+          if [[ "$changelog_body" == *$'\n[compare changes]'* ]]; then
+            compare_changes="${changelog_body##*$'\n'}"
+            changelog_body="${changelog_body%$'\n'*}"
+          fi
+          release_notes="$changelog_header
 
-          $install_notes"
+          $install_notes
+
+          $changelog_body"
+          if [[ -n "$compare_changes" ]]; then
+            release_notes="$release_notes
+
+          $compare_changes"
+          fi
 
           args=(--target "${{ steps.target.outputs.sha }}" --title "$TITLE" --notes "$release_notes")
           if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
