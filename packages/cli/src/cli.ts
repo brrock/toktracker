@@ -94,33 +94,36 @@ const CONFIG_FIELDS: Record<ServiceRole, Record<string, ConfigField>> = {
   },
 };
 
-const usage = (role: ServiceRole): never => {
+const usageText = (role: ServiceRole): string => {
   const executable = `toktracker-${role}`;
-  throw new Error(
-    [
-      "Usage:",
-      `  ${executable} setup`,
-      `  ${executable} config [list|path]`,
-      `  ${executable} config get <name>`,
-      `  ${executable} config set <name> <value> [--no-restart]`,
-      `  ${executable} config unset <name> [--no-restart]`,
-      `  ${executable} update [--nightly|--stable] [--version <tag>] [--force]`,
-      `  ${executable} versions`,
-      `  ${executable} use <version>`,
-      `  ${executable} rollback`,
-      `  ${executable} channel <stable|nightly>`,
-      ...(role === "gateway"
-        ? [`  ${executable} bind <IPv4-or-IPv6-address> [--no-restart]`]
-        : []),
-      ...(role === "gateway"
-        ? [
-            `  ${executable} auth code`,
-            `  ${executable} auth devices`,
-            `  ${executable} auth revoke <device-id>`,
-          ]
-        : []),
-    ].join("\n")
-  );
+  return [
+    "Usage:",
+    `  ${executable} setup`,
+    `  ${executable} config [list|path]`,
+    `  ${executable} config get <name>`,
+    `  ${executable} config set <name> <value> [--no-restart]`,
+    `  ${executable} config unset <name> [--no-restart]`,
+    `  ${executable} update [--nightly|--stable] [--version <tag>] [--force]`,
+    `  ${executable} versions`,
+    `  ${executable} use <version>`,
+    `  ${executable} rollback`,
+    `  ${executable} channel <stable|nightly>`,
+    ...(role === "gateway"
+      ? [`  ${executable} bind <IPv4-or-IPv6-address> [--no-restart]`]
+      : []),
+    ...(role === "gateway"
+      ? [
+          `  ${executable} auth code`,
+          `  ${executable} auth devices`,
+          `  ${executable} auth revoke <device-id>`,
+        ]
+      : []),
+    `  ${executable} --help`,
+  ].join("\n");
+};
+
+const usage = (role: ServiceRole): never => {
+  throw new Error(usageText(role));
 };
 
 const fieldFor = (role: ServiceRole, name: string | undefined): ConfigField => {
@@ -211,6 +214,10 @@ const runConfigCommand = async (
 
 export const runCli = async (role: ServiceRole): Promise<void> => {
   const [command, ...args] = process.argv.slice(2);
+  if (command === "--help" || command === "-h" || args.includes("--help")) {
+    console.log(usageText(role));
+    return;
+  }
   if (command === "setup") {
     await setupRole(role);
     return;
