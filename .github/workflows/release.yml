@@ -189,9 +189,9 @@ jobs:
           bunx changelogen@0.6.2 "${changelog_args[@]}"
           bun scripts/add-changelog-authors.ts "$changelog_path"
           changelog_notes="$(<"$changelog_path")"
-          release_notes="$install_notes
+          release_notes="$changelog_notes
 
-          $changelog_notes"
+          $install_notes"
 
           args=(--target "${{ steps.target.outputs.sha }}" --title "$TITLE" --notes "$release_notes")
           if [[ "$PRERELEASE" == "true" ]]; then args+=(--prerelease); fi
