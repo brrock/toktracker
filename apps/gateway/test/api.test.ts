@@ -101,6 +101,15 @@ describe("gateway API", () => {
     expect(dashboardWithIngestionKey.status).toBe(401);
   });
 
+  test("allows dashboard requests when dashboard authentication is disabled", async () => {
+    const store = await testStore();
+    const app = createApp(store, undefined, false);
+
+    const response = await app.request("/api/v1/summary");
+
+    expect(response.status).toBe(200);
+  });
+
   test("pairs a dashboard once, rotates refresh tokens, and revokes devices", async () => {
     const store = await testStore();
     const app = createApp(store, "");

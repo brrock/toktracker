@@ -97,7 +97,8 @@ const boundedInteger = (
 
 export const createApp = (
   store: Store,
-  accessKey = process.env.TOKTRACKER_API_KEY
+  accessKey = process.env.TOKTRACKER_API_KEY,
+  dashboardAuthRequired = true
 ): Hono => {
   const app = new Hono();
   const allowedOrigin = process.env.TOKTRACKER_CORS_ORIGIN;
@@ -129,7 +130,7 @@ export const createApp = (
       await next();
       return;
     }
-    if (!hasDashboardSession) {
+    if (dashboardAuthRequired && !hasDashboardSession) {
       return context.json({ error: "Dashboard pairing is required" }, 401);
     }
     await next();

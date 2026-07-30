@@ -2,6 +2,7 @@ import type { DashboardSummary } from "@toktracker/shared";
 import { Bot, Monitor, Moon, Sun } from "lucide-react";
 
 import { useTheme } from "@/components/theme-provider";
+import { Checkbox } from "@/components/ui/checkbox";
 
 import { AgentLogo } from "./primitives";
 
@@ -74,28 +75,29 @@ export const DeviceFilter = ({
         </span>
       </summary>
       <div className="absolute right-0 top-10 z-30 w-64 rounded-lg border bg-popover p-2 text-popover-foreground shadow-lg">
-        <button
-          type="button"
-          onClick={() => setSelectedIds([])}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+        <label
+          htmlFor="all-devices"
+          className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"
         >
-          <span className="grid size-4 place-items-center rounded border text-[11px]">
-            {selectedIds.length === 0 ? "✓" : ""}
-          </span>
+          <Checkbox
+            id="all-devices"
+            checked={selectedIds.length === 0}
+            onCheckedChange={() => setSelectedIds([])}
+          />
           All devices
-        </button>
+        </label>
         <div className="my-1 border-t" />
         <div className="max-h-64 overflow-y-auto">
           {devices.map((device) => (
             <label
               key={device.id}
+              htmlFor={`device-${device.id}`}
               className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"
             >
-              <input
-                type="checkbox"
+              <Checkbox
+                id={`device-${device.id}`}
                 checked={selected.has(device.id)}
-                onChange={() => toggle(device.id)}
-                className="size-4 accent-primary"
+                onCheckedChange={() => toggle(device.id)}
               />
               <span className="min-w-0 flex-1 truncate">{device.name}</span>
               <span className="text-[10px] text-muted-foreground">
@@ -149,28 +151,29 @@ export const AgentFilter = ({
         </span>
       </summary>
       <div className="absolute right-0 top-11 z-30 w-64 rounded-lg border bg-popover p-2 text-popover-foreground shadow-lg">
-        <button
-          type="button"
-          onClick={() => setSelectedNames([])}
-          className="flex w-full items-center gap-2 rounded-md px-2 py-2 text-left text-sm hover:bg-muted"
+        <label
+          htmlFor="all-coding-agents"
+          className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"
         >
-          <span className="grid size-4 place-items-center rounded border text-[11px]">
-            {selectedNames.length === 0 ? "✓" : ""}
-          </span>
+          <Checkbox
+            id="all-coding-agents"
+            checked={selectedNames.length === 0}
+            onCheckedChange={() => setSelectedNames([])}
+          />
           All coding agents
-        </button>
+        </label>
         <div className="my-1 border-t" />
         <div className="max-h-64 overflow-y-auto">
           {agents.map((agent) => (
             <label
               key={agent.name}
+              htmlFor={`agent-${agent.name}`}
               className="flex cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"
             >
-              <input
-                type="checkbox"
+              <Checkbox
+                id={`agent-${agent.name}`}
                 checked={selected.has(agent.name)}
-                onChange={() => toggle(agent.name)}
-                className="size-4 accent-primary"
+                onCheckedChange={() => toggle(agent.name)}
               />
               <AgentLogo name={agent.name} size="size-5" />
               <span className="min-w-0 flex-1 truncate capitalize">

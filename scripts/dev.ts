@@ -23,6 +23,7 @@ const sharedEnvironment = {
   TOKTRACKER_DASHBOARD_PORT: dashboardPort,
   TOKTRACKER_DATA_DIR: clientData,
   TOKTRACKER_DB: path.join(gatewayData, "toktracker.db"),
+  TOKTRACKER_DISABLE_DASHBOARD_AUTH: "1",
   TOKTRACKER_GATEWAY: gatewayUrl,
 };
 
