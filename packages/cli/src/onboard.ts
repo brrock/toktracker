@@ -1,6 +1,7 @@
 /* eslint-disable no-await-in-loop */
 // Setup is deliberately interactive, and connection attempts must be sequential.
 import { mkdir } from "node:fs/promises";
+import { isIP } from "node:net";
 import { homedir, networkInterfaces, platform } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline/promises";
@@ -158,33 +159,80 @@ const normalizeUrl = (value: string): string => {
   return url.toString().replace(/\/$/u, "");
 };
 
-const setupGateway = async (): Promise<void> => {
-  const port = await ask("Gateway port", "3000");
-  if (!/^\d+$/u.test(port) || Number(port) < 1 || Number(port) > 65_535) {
-    throw new Error("Port must be between 1 and 65535");
+const generatedAccessKey = (): string =>
+  crypto.randomUUID().replaceAll("-", "") +
+  crypto.randomUUID().replaceAll("-", "");
+
+const configureGatewayNetwork = async (): Promise<{
+  accessKey: string;
+  exposeToLan: boolean;
+  host: string;
+}> => {
+  let accessKey = "";
+  if (
+    await confirm(
+      "Protect and encrypt client ingestion with a shared key",
+      false
+    )
+  ) {
+    accessKey = await ask("Client ingestion key (leave blank to generate)");
+    accessKey ||= generatedAccessKey();
   }
   const exposeToLan = await confirm(
     "Expose the gateway to other devices on your LAN",
     false
   );
-  if (exposeToLan) {
-    console.log(
-      "Warning: LAN access exposes usage metadata. Firewall the port and keep the generated key private."
+  if (exposeToLan && !accessKey) {
+    console.log("LAN access requires a shared key; generating one now.");
+    accessKey = generatedAccessKey();
+  }
+  if (!exposeToLan) {
+    return { accessKey, exposeToLan, host: "127.0.0.1" };
+  }
+  console.log(
+    "Warning: LAN access exposes usage metadata. Firewall the port and keep the generated key private."
+  );
+  const host = await ask(
+    "Gateway bind address (leave as 0.0.0.0 for all IPv4 interfaces)",
+    "0.0.0.0"
+  );
+  if (isIP(host) === 0) {
+    throw new Error(
+      "Bind address must be an IPv4 or IPv6 address without a port"
     );
   }
-  let accessKey = "";
-  if (
-    exposeToLan ||
-    (await confirm(
-      "Protect and encrypt client ingestion with a shared key",
-      false
-    ))
-  ) {
-    accessKey = await ask("Client ingestion key (leave blank to generate)");
-    accessKey ||=
-      crypto.randomUUID().replaceAll("-", "") +
-      crypto.randomUUID().replaceAll("-", "");
+  return { accessKey, exposeToLan, host };
+};
+
+const gatewayAddresses = (
+  host: string,
+  port: string,
+  exposeToLan: boolean
+): Set<string> => {
+  const addresses = new Set<string>([`http://localhost:${port}`]);
+  if (!exposeToLan) {
+    return addresses;
   }
+  if (host !== "0.0.0.0") {
+    addresses.add(`http://${host.includes(":") ? `[${host}]` : host}:${port}`);
+    return addresses;
+  }
+  for (const entries of Object.values(networkInterfaces())) {
+    for (const entry of entries ?? []) {
+      if (entry.family === "IPv4" && !entry.internal) {
+        addresses.add(`http://${entry.address}:${port}`);
+      }
+    }
+  }
+  return addresses;
+};
+
+const setupGateway = async (): Promise<void> => {
+  const port = await ask("Gateway port", "3000");
+  if (!/^\d+$/u.test(port) || Number(port) < 1 || Number(port) > 65_535) {
+    throw new Error("Port must be between 1 and 65535");
+  }
+  const { accessKey, exposeToLan, host } = await configureGatewayNetwork();
   const updateChannel = (await confirm(
     "Receive nightly prerelease updates",
     false
@@ -192,23 +240,14 @@ const setupGateway = async (): Promise<void> => {
     ? "nightly"
     : "stable";
   const config = await writeConfig("gateway", {
-    HOST: exposeToLan ? "0.0.0.0" : "127.0.0.1",
+    HOST: host,
     PORT: port,
     TOKTRACKER_API_KEY: accessKey,
     TOKTRACKER_DB: join(dataDirectory("gateway"), "toktracker.db"),
     TOKTRACKER_UPDATE_CHANNEL: updateChannel,
   });
   await installService("gateway");
-  const addresses = new Set<string>([`http://localhost:${port}`]);
-  if (exposeToLan) {
-    for (const entries of Object.values(networkInterfaces())) {
-      for (const entry of entries ?? []) {
-        if (entry.family === "IPv4" && !entry.internal) {
-          addresses.add(`http://${entry.address}:${port}`);
-        }
-      }
-    }
-  }
+  const addresses = gatewayAddresses(host, port, exposeToLan);
   console.log(`\nGateway configured in ${config}`);
   console.log("Use one of these URLs when setting up a client:");
   for (const address of addresses) {

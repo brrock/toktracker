@@ -1,3 +1,5 @@
+import { isIP } from "node:net";
+
 import { migrateLegacyGlobalInstallation } from "./installation";
 import { installService, setupRole } from "./onboard";
 import { runService } from "./run-service";
@@ -48,6 +50,16 @@ const channel = (value: string): string => {
   }
   return value;
 };
+const bindAddress = (value: string): string => {
+  if (isIP(value) === 0) {
+    throw new Error(
+      "Bind address must be an IPv4 or IPv6 address without a port"
+    );
+  }
+  return value;
+};
+const isLoopbackAddress = (address: string): boolean =>
+  address === "::1" || address.startsWith("127.");
 
 const COMMON_FIELDS: Record<string, ConfigField> = {
   "encryption-key": {
@@ -97,6 +109,9 @@ const usage = (role: ServiceRole): never => {
       `  ${executable} use <version>`,
       `  ${executable} rollback`,
       `  ${executable} channel <stable|nightly>`,
+      ...(role === "gateway"
+        ? [`  ${executable} bind <IPv4-or-IPv6-address> [--no-restart]`]
+        : []),
       ...(role === "gateway"
         ? [
             `  ${executable} auth code`,
@@ -217,6 +232,24 @@ export const runCli = async (role: ServiceRole): Promise<void> => {
   }
   if (command === "run-service") {
     await runService(role);
+    return;
+  }
+  if (command === "bind" && role === "gateway") {
+    const [address, ...flags] = args;
+    if (!address) {
+      throw new Error("A bind address is required");
+    }
+    if (flags.some((flag) => flag !== "--no-restart")) {
+      throw new Error("bind only supports the --no-restart flag");
+    }
+    const bindHost = bindAddress(address);
+    const config = await readConfig(role);
+    if (!isLoopbackAddress(bindHost) && !config.TOKTRACKER_API_KEY) {
+      throw new Error(
+        "Set an encryption key before binding beyond localhost: toktracker-gateway config set encryption-key <key>"
+      );
+    }
+    await runConfigCommand(role, ["set", "host", bindHost, ...flags]);
     return;
   }
   if (command === "config") {
