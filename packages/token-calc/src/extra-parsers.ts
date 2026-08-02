@@ -106,8 +106,14 @@ export function parsePi(
       started = true;
       continue;
     }
-    if (row.type === "session_info") {
-      agent = typeof row.name === "string" ? piAgent(row.name) : undefined;
+    if (row.type === "session_info" && typeof row.name === "string") {
+      const name = row.name.trim();
+      if (name) {
+        // Pi writes Ctrl+R / /name changes as session_info entries, which can
+        // occur after usage entries. Keep the final name for the whole session.
+        sessionTitle = name;
+        agent = piAgent(name) ?? agent;
+      }
       continue;
     }
     const m = row.message;
@@ -141,7 +147,7 @@ export function parsePi(
       })
     );
   }
-  return out;
+  return out.map((message) => ({ ...message, sessionTitle }));
 }
 
 function opencodeMessage(

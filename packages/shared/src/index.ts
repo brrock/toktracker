@@ -158,6 +158,18 @@ export interface UsageDetail {
   }[];
 }
 
+export interface SessionUsagePart {
+  model: string;
+  provider: string;
+  tokens: TokenBreakdown;
+  cost: number;
+  messages: number;
+  startedAt: number;
+  lastSeen: number;
+}
+
+export type SessionSort = "createdAt" | "lastSeen";
+
 export interface SessionSummary {
   /** Stable opaque identity for the device/source/session tuple. */
   id: string;
@@ -165,12 +177,16 @@ export interface SessionSummary {
   sourcePath: string;
   sessionId: string;
   title?: string;
+  /** Timestamp of the first usage recorded for this session. */
+  createdAt: number;
   client: string;
   project: string;
   model: string;
   tokens: number;
   cost: number;
   lastSeen: number;
+  /** Consecutive usage recorded with the same model. Present on session detail responses. */
+  parts?: SessionUsagePart[];
 }
 
 export interface DashboardSummary {

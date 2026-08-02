@@ -43,6 +43,10 @@ describe("additional tokscale client parity", () => {
       reasoning: 0,
     });
   });
+  test("Pi session rename overrides the inferred title", () => {
+    const data = `{"type":"session","id":"s","cwd":"/tmp"}\n{"type":"message","timestamp":"2026-01-01T00:00:01Z","message":{"role":"user","content":"Original title"}}\n{"type":"message","timestamp":"2026-01-01T00:00:02Z","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":1,"output":1}}}\n{"type":"session_info","name":"New storage"}`;
+    expect(parsePi(data, "x")[0]?.sessionTitle).toBe("New storage");
+  });
   test("Pi subagent extraction matches upstream", () => {
     const data = `{"type":"session","id":"s","cwd":"/tmp"}\n{"type":"session_info","name":"subagent-go-reviewer-e2e7405c-cb84-4f0a-a6da-9d987494d130-1"}\n{"type":"message","message":{"role":"assistant","model":"gpt-5","provider":"openai","usage":{"input":1,"output":1}}}`;
     expect(parsePi(data, "x")[0]?.agent).toBe("go-reviewer");

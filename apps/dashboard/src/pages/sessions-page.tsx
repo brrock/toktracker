@@ -1,4 +1,8 @@
-import type { DashboardSummary, SessionSummary } from "@toktracker/shared";
+import type {
+  DashboardSummary,
+  SessionSort,
+  SessionSummary,
+} from "@toktracker/shared";
 import { Bot, CircleDollarSign, Cpu, Zap } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useParams, useSearchParams } from "react-router-dom";
@@ -14,10 +18,12 @@ export const SessionsPage = ({
   data,
   deviceParam,
   query,
+  sessionSort,
 }: {
   data: DashboardSummary;
   deviceParam: string;
   query: string;
+  sessionSort: SessionSort;
 }) => {
   const [searchParams, setSearchParams] = useSearchParams();
   const selectedAgentNames = (searchParams.get("agents") ?? "")
@@ -32,7 +38,7 @@ export const SessionsPage = ({
     const loadSessions = async (): Promise<void> => {
       setLoading(true);
       try {
-        const params = new URLSearchParams({ limit: "200" });
+        const params = new URLSearchParams({ limit: "200", sort: sessionSort });
         if (deviceParam) {
           params.set("devices", deviceParam);
         }
@@ -58,7 +64,7 @@ export const SessionsPage = ({
     };
     loadSessions();
     return () => controller.abort();
-  }, [agentParam, deviceParam]);
+  }, [agentParam, deviceParam, sessionSort]);
 
   const setSelectedAgentNames = (names: string[]): void => {
     setSearchParams((current) => {
@@ -121,9 +127,6 @@ export const SessionPage = ({
   }>({ id: "" });
 
   useEffect(() => {
-    if (recentSession) {
-      return;
-    }
     const controller = new AbortController();
     const loadSession = async (): Promise<void> => {
       try {
@@ -153,8 +156,8 @@ export const SessionPage = ({
   }, [deviceParam, id, recentSession]);
 
   const session =
-    recentSession ??
-    (loadedSession.id === id ? loadedSession.session : undefined);
+    (loadedSession.id === id ? loadedSession.session : undefined) ??
+    recentSession;
   if (!recentSession && loadedSession.id !== id) {
     return <EmptyState>Loading session…</EmptyState>;
   }
@@ -192,6 +195,42 @@ export const SessionPage = ({
           note="Primary model"
         />
       </section>
+      {session.parts && (
+        <section className="mt-6 overflow-x-auto rounded-xl border bg-card p-5">
+          <h2 className="mb-4 font-semibold">Model usage</h2>
+          <table className="w-full text-left text-sm">
+            <thead className="border-b text-xs uppercase tracking-wide text-muted-foreground">
+              <tr>
+                <th className="pb-3 font-medium">Model</th>
+                <th className="pb-3 pl-6 font-medium">Tokens</th>
+                <th className="pb-3 pl-6 font-medium">Messages</th>
+                <th className="pb-3 pl-6 text-right font-medium">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              {session.parts.map((part) => (
+                <tr
+                  key={`${part.startedAt}-${part.model}-${part.provider}`}
+                  className="border-b last:border-0"
+                >
+                  <td className="py-3">{part.model}</td>
+                  <td className="py-3 pl-6">
+                    {compact(
+                      part.tokens.input +
+                        part.tokens.output +
+                        part.tokens.cacheRead +
+                        part.tokens.cacheWrite +
+                        part.tokens.reasoning
+                    )}
+                  </td>
+                  <td className="py-3 pl-6">{part.messages}</td>
+                  <td className="py-3 pl-6 text-right">{money(part.cost)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </section>
+      )}
     </PageHeading>
   );
 };

@@ -234,8 +234,24 @@ export const createApp = (
     if (!isIngestRequest(body)) {
       return context.json({ error: "Invalid ingestion payload" }, 400);
     }
-    return context.json(store.ingest(body));
+    const result = store.ingest(body);
+    return result.banned
+      ? context.json({ error: "This device has been banned" }, 403)
+      : context.json(result);
   });
+  app.get("/api/v1/dashboard-devices", (context) =>
+    context.json(store.dashboardDevices())
+  );
+  app.delete("/api/v1/dashboard-devices/:id", (context) =>
+    store.revokeDashboardDevice(context.req.param("id"))
+      ? context.json({ ok: true })
+      : context.json({ error: "Dashboard device not found" }, 404)
+  );
+  app.delete("/api/v1/devices/:id", (context) =>
+    store.banDevice(context.req.param("id"))
+      ? context.json({ ok: true })
+      : context.json({ error: "Usage device not found" }, 404)
+  );
   app.get("/api/v1/sessions/search", (context) => {
     const devices = queryList(context.req.query("devices"));
     const agents = queryList(context.req.query("agents"));
@@ -255,7 +271,8 @@ export const createApp = (
         devices,
         agents,
         limit,
-        offset
+        offset,
+        context.req.query("sort") === "createdAt" ? "createdAt" : "lastSeen"
       )
     );
   });
@@ -274,7 +291,16 @@ export const createApp = (
         ? requestedRange
         : "month";
     const includeAllDevices = context.req.query("includeAllDevices") === "true";
-    return context.json(store.summary(devices, range, includeAllDevices));
+    return context.json(
+      store.summary(
+        devices,
+        range,
+        includeAllDevices,
+        context.req.query("sessionSort") === "createdAt"
+          ? "createdAt"
+          : "lastSeen"
+      )
+    );
   });
 
   const dashboardDir =

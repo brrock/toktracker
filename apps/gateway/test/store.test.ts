@@ -89,6 +89,59 @@ describe("Store", () => {
     store.close();
   });
 
+  test("finds sessions with fuzzy title queries", async () => {
+    const { store } = await createStore();
+    store.ingest(
+      payload(
+        "device",
+        "/source.db",
+        "deploy-session",
+        undefined,
+        "Plan dashboard deployment"
+      )
+    );
+
+    expect(store.sessions("pln dply", [], [], 20)).toHaveLength(1);
+    store.close();
+  });
+
+  test("sorts sessions by their first recorded activity when requested", async () => {
+    const { store } = await createStore();
+    store.ingest({
+      device: { id: "device", name: "device", platform: "test" },
+      sessions: [
+        {
+          deviceId: "device",
+          messages: [message("old", 10), message("old", 30)],
+          sessionId: "old",
+          sourceMtimeMs: 1,
+          sourcePath: "/old.jsonl",
+          sourceSize: 100,
+        },
+        {
+          deviceId: "device",
+          messages: [message("new", 20), message("new", 25)],
+          sessionId: "new",
+          sourceMtimeMs: 1,
+          sourcePath: "/new.jsonl",
+          sourceSize: 100,
+        },
+      ],
+    });
+
+    expect(
+      store
+        .sessions("", [], [], 20, 0, "createdAt")
+        .map((session) => session.sessionId)
+    ).toEqual(["new", "old"]);
+    expect(
+      store
+        .sessions("", [], [], 20, 0, "lastSeen")
+        .map((session) => session.sessionId)
+    ).toEqual(["old", "new"]);
+    store.close();
+  });
+
   test("applies replacement and patch updates transactionally", async () => {
     const { store } = await createStore();
     store.ingest(payload("device", "/source.db", "one"));
@@ -106,6 +159,43 @@ describe("Store", () => {
     expect(
       store.sessions("", [], [], 20).map((session) => session.sessionId)
     ).toEqual(["three"]);
+    store.close();
+  });
+
+  test("stores one usage part per consecutive model run", async () => {
+    const { store } = await createStore();
+    const first = message("session", 1_700_000_000_000);
+    const second = {
+      ...message("session", 1_700_000_000_100),
+      modelId: "claude-sonnet",
+    };
+    const third = {
+      ...message("session", 1_700_000_000_200),
+      modelId: "gpt-5",
+    };
+    store.ingest({
+      device: { id: "device", name: "device", platform: "test" },
+      sessions: [
+        {
+          deviceId: "device",
+          messages: [first, second, third],
+          sessionId: "session",
+          sourceMtimeMs: 1,
+          sourcePath: "/session.jsonl",
+          sourceSize: 100,
+        },
+      ],
+    });
+
+    const session = store.session(store.sessions("", [], [], 20)[0]?.id ?? "");
+    expect(session?.parts?.map((part) => part.model)).toEqual([
+      "gpt-5",
+      "claude-sonnet",
+      "gpt-5",
+    ]);
+    expect(session?.parts?.map((part) => part.tokens.input)).toEqual([
+      10, 10, 10,
+    ]);
     store.close();
   });
 
@@ -146,5 +236,19 @@ describe("Store", () => {
     });
     expect(migrated.sessions("", [], [], 20)).toHaveLength(2);
     migrated.close();
+
+    const database = new Database(dbPath, { strict: true });
+    const columns = database.query("PRAGMA table_info(sessions)").all() as {
+      name: string;
+    }[];
+    expect(columns.some((column) => column.name === "messages_json")).toBe(
+      false
+    );
+    expect(
+      database.query("SELECT COUNT(*) count FROM session_usage").get() as {
+        count: number;
+      }
+    ).toEqual({ count: 2 });
+    database.close();
   });
 });

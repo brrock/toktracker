@@ -142,16 +142,23 @@ async function loadPricingCatalog(): Promise<PriceCatalog> {
   return { ...modelsDev, ...liteLlm };
 }
 
-const [pricingCatalog, sessionTitles] = await Promise.all([
+const [pricingCatalog, initialSessionTitles] = await Promise.all([
   process.env.TOKTRACKER_DISABLE_PRICING === "1" ? {} : loadPricingCatalog(),
   loadSessionTitles(),
 ]);
+let sessionTitles = initialSessionTitles;
+const sessionTitleFingerprint = (titles: Map<string, string>): string =>
+  Bun.hash(JSON.stringify([...titles].toSorted())).toString(16);
 const db = new Database(join(dataDir, "client.db"), { create: true });
 db.exec(
   "CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY,mtime_ms REAL NOT NULL,size INTEGER NOT NULL,uploaded_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS indexed_sessions(source_path TEXT NOT NULL,session_id TEXT NOT NULL,content_hash TEXT NOT NULL,PRIMARY KEY(source_path,session_id));CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
 );
 const indexVersion = Bun.hash(
-  JSON.stringify([INDEX_SCHEMA_VERSION, pricingCatalog, [...sessionTitles]])
+  JSON.stringify([
+    INDEX_SCHEMA_VERSION,
+    pricingCatalog,
+    sessionTitleFingerprint(sessionTitles),
+  ])
 ).toString(16);
 const previousIndexVersion = (
   db.query("SELECT value FROM settings WHERE key='index_version'").get() as {
@@ -360,13 +367,23 @@ const sessionHash = (messages: UsageMessage[]) =>
 
 async function changedSessions(): Promise<SyncPlan> {
   const plan: SyncPlan = { scans: [], sessions: [], sourceUpdates: [] };
+  const latestSessionTitles = await loadSessionTitles();
+  const titlesChanged =
+    sessionTitleFingerprint(sessionTitles) !==
+    sessionTitleFingerprint(latestSessionTitles);
+  sessionTitles = latestSessionTitles;
   for (const source of await discover()) {
     try {
       const fp = await fingerprint(source.path, source.companion);
       const known = db
         .query("SELECT mtime_ms,size FROM indexed_files WHERE path=?")
         .get(source.path) as { mtime_ms: number; size: number } | null;
-      if (known && known.mtime_ms === fp.mtime && known.size === fp.size) {
+      if (
+        !titlesChanged &&
+        known &&
+        known.mtime_ms === fp.mtime &&
+        known.size === fp.size
+      ) {
         continue;
       }
       const messages = await parse(source, fp.mtime);

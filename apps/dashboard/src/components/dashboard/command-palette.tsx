@@ -1,4 +1,8 @@
-import type { DashboardSummary, SessionSummary } from "@toktracker/shared";
+import type {
+  DashboardSummary,
+  SessionSort,
+  SessionSummary,
+} from "@toktracker/shared";
 import { Activity, Boxes, Cpu } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
@@ -22,11 +26,13 @@ import { AgentLogo } from "./primitives";
 export const CommandPalette = ({
   data,
   deviceParam,
+  sessionSort,
   onOpenChange,
   open,
 }: {
   data: DashboardSummary;
   deviceParam: string;
+  sessionSort: SessionSort;
   onOpenChange: (open: boolean) => void;
   open: boolean;
 }) => {
@@ -35,6 +41,16 @@ export const CommandPalette = ({
   const [sessionQuery, setSessionQuery] = useState("");
   const [sessionResults, setSessionResults] = useState<SessionSummary[]>([]);
   const trimmedSessionQuery = sessionQuery.trim();
+  const displayedSessions = trimmedSessionQuery
+    ? [
+        ...new Map(
+          [...data.recentSessions, ...sessionResults].map((session) => [
+            session.id,
+            session,
+          ])
+        ).values(),
+      ]
+    : data.recentSessions;
 
   useEffect(() => {
     if (!trimmedSessionQuery) {
@@ -43,7 +59,11 @@ export const CommandPalette = ({
     const controller = new AbortController();
     const loadSessions = async (): Promise<void> => {
       try {
-        const params = new URLSearchParams({ q: trimmedSessionQuery });
+        const params = new URLSearchParams({
+          limit: "200",
+          q: trimmedSessionQuery,
+          sort: sessionSort,
+        });
         if (deviceParam) {
           params.set("devices", deviceParam);
         }
@@ -65,7 +85,7 @@ export const CommandPalette = ({
       controller.abort();
       window.clearTimeout(timeout);
     };
-  }, [deviceParam, trimmedSessionQuery]);
+  }, [deviceParam, sessionSort, trimmedSessionQuery]);
   const goTo = (path: string): void => {
     navigate(pathWithFilters(path, searchParams));
     onOpenChange(false);
@@ -137,21 +157,19 @@ export const CommandPalette = ({
           ))}
         </CommandGroup>
         <CommandGroup heading="Sessions">
-          {(trimmedSessionQuery ? sessionResults : data.recentSessions).map(
-            (session) => (
-              <CommandItem
-                key={session.id}
-                value={`session ${session.title ?? ""} ${session.project} ${session.sessionId} ${session.model}`}
-                onSelect={() =>
-                  goTo(`/sessions/${encodeURIComponent(session.id)}`)
-                }
-              >
-                <Activity />
-                {session.title ?? session.sessionId}
-                <CommandShortcut>{session.project}</CommandShortcut>
-              </CommandItem>
-            )
-          )}
+          {displayedSessions.map((session) => (
+            <CommandItem
+              key={session.id}
+              value={`session ${session.title ?? ""} ${session.project} ${session.sessionId} ${session.model}`}
+              onSelect={() =>
+                goTo(`/sessions/${encodeURIComponent(session.id)}`)
+              }
+            >
+              <Activity />
+              {session.title ?? session.sessionId}
+              <CommandShortcut>{session.project}</CommandShortcut>
+            </CommandItem>
+          ))}
         </CommandGroup>
       </CommandList>
     </CommandDialog>
