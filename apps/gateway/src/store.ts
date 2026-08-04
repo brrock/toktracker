@@ -51,6 +51,20 @@ export interface DashboardCredentials {
   refreshTokenExpiresAt: number;
 }
 
+export interface ClientAutoUpdateSettings {
+  channel: "nightly" | "stable";
+  enabled: boolean;
+  windowEndHour: number;
+  windowStartHour: number;
+}
+
+const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
+  channel: "stable",
+  enabled: false,
+  windowEndHour: 4,
+  windowStartHour: 2,
+};
+
 interface StoredSessionRow {
   device_id: string;
   source_path: string;
@@ -308,6 +322,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS dashboard_pairing_codes (code_hash TEXT PRIMARY KEY, created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL);
       CREATE TABLE IF NOT EXISTS dashboard_tokens (token_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('access','refresh')), created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, FOREIGN KEY(device_id) REFERENCES dashboard_devices(id) ON DELETE CASCADE);
       CREATE INDEX IF NOT EXISTS dashboard_tokens_device ON dashboard_tokens(device_id);
+      CREATE TABLE IF NOT EXISTS gateway_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
     `);
     const deviceColumns = this.db.query("PRAGMA table_info(devices)").all() as {
       name: string;
@@ -514,6 +529,55 @@ export class Store {
         .query("UPDATE devices SET banned_at=? WHERE id=?")
         .run(Date.now(), deviceId).changes > 0
     );
+  }
+
+  clientAutoUpdateSettings(): ClientAutoUpdateSettings {
+    const row = this.db
+      .query(
+        "SELECT value FROM gateway_settings WHERE key='client_auto_update'"
+      )
+      .get() as { value: string } | null;
+    if (!row) {
+      return { ...DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS };
+    }
+    try {
+      const value = JSON.parse(row.value) as Partial<ClientAutoUpdateSettings>;
+      const { windowEndHour, windowStartHour } = value;
+      if (
+        typeof value.enabled === "boolean" &&
+        (value.channel === "stable" || value.channel === "nightly") &&
+        typeof windowStartHour === "number" &&
+        Number.isInteger(windowStartHour) &&
+        windowStartHour >= 0 &&
+        windowStartHour < 24 &&
+        typeof windowEndHour === "number" &&
+        Number.isInteger(windowEndHour) &&
+        windowEndHour >= 0 &&
+        windowEndHour < 24 &&
+        windowStartHour !== windowEndHour
+      ) {
+        return {
+          channel: value.channel,
+          enabled: value.enabled,
+          windowEndHour,
+          windowStartHour,
+        };
+      }
+    } catch {
+      // Invalid persisted settings fall back to the safe disabled default.
+    }
+    return { ...DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS };
+  }
+
+  setClientAutoUpdateSettings(
+    settings: ClientAutoUpdateSettings
+  ): ClientAutoUpdateSettings {
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('client_auto_update',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(settings));
+    return settings;
   }
 
   ingest(payload: IngestRequest) {

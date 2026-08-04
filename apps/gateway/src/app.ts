@@ -11,7 +11,11 @@ import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 
-import type { DashboardCredentials, Store } from "./store";
+import type {
+  ClientAutoUpdateSettings,
+  DashboardCredentials,
+  Store,
+} from "./store";
 
 const TIME_RANGES = new Set<TimeRange>(["day", "week", "month", "year", "all"]);
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
@@ -19,6 +23,7 @@ const MAX_PAIRING_BODY_BYTES = 4096;
 const MAX_FILTER_VALUES = 100;
 const MAX_PAGE_SIZE = 200;
 const DEFAULT_PAGE_SIZE = 20;
+const UPDATE_HOURS = new Set(Array.from({ length: 24 }, (_, hour) => hour));
 const ACCESS_COOKIE = "toktracker_access";
 const REFRESH_COOKIE = "toktracker_refresh";
 const ACCESS_COOKIE_SECONDS = 15 * 60;
@@ -119,7 +124,8 @@ export const createApp = (
     );
     const isClientRoute =
       context.req.path === "/api/health" ||
-      context.req.path === "/api/v1/ingest";
+      context.req.path === "/api/v1/ingest" ||
+      context.req.path === "/api/v1/client-update-policy";
     if (isClientRoute) {
       if (accessKey && !hasSharedKey) {
         return context.json(
@@ -199,6 +205,42 @@ export const createApp = (
       service: "toktracker-gateway",
     })
   );
+  app.get("/api/v1/client-update-policy", (context) =>
+    context.json(store.clientAutoUpdateSettings())
+  );
+  app.get("/api/v1/settings/client-auto-update", (context) =>
+    context.json(store.clientAutoUpdateSettings())
+  );
+  app.put("/api/v1/settings/client-auto-update", async (context) => {
+    let body: unknown;
+    try {
+      body = await context.req.json();
+    } catch {
+      return context.json({ error: "Invalid update settings" }, 400);
+    }
+    const settings = body as Partial<ClientAutoUpdateSettings>;
+    const { windowEndHour, windowStartHour } = settings;
+    if (
+      !settings ||
+      typeof settings.enabled !== "boolean" ||
+      (settings.channel !== "stable" && settings.channel !== "nightly") ||
+      typeof windowStartHour !== "number" ||
+      !UPDATE_HOURS.has(windowStartHour) ||
+      typeof windowEndHour !== "number" ||
+      !UPDATE_HOURS.has(windowEndHour) ||
+      windowStartHour === windowEndHour
+    ) {
+      return context.json({ error: "Invalid update settings" }, 400);
+    }
+    return context.json(
+      store.setClientAutoUpdateSettings({
+        channel: settings.channel,
+        enabled: settings.enabled,
+        windowEndHour,
+        windowStartHour,
+      })
+    );
+  });
   app.post("/api/v1/ingest", async (context) => {
     const contentLength = Number(context.req.header("content-length") ?? 0);
     if (contentLength > MAX_BODY_BYTES) {

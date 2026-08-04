@@ -12,6 +12,7 @@ import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Input } from "@/components/ui/input";
 import { apiFetch } from "@/lib/api";
 import { recentDate } from "@/lib/dashboard";
 
@@ -26,6 +27,13 @@ interface DashboardDevice {
 interface DateRange {
   from: Date;
   to: Date;
+}
+
+interface ClientAutoUpdateSettings {
+  channel: "nightly" | "stable";
+  enabled: boolean;
+  windowEndHour: number;
+  windowStartHour: number;
 }
 
 const startOfDay = (date: Date): Date =>
@@ -210,6 +218,9 @@ export const SettingsPage = ({
   const [dashboardDevices, setDashboardDevices] = useState<DashboardDevice[]>(
     []
   );
+  const [clientAutoUpdate, setClientAutoUpdate] =
+    useState<ClientAutoUpdateSettings>();
+  const [savingClientAutoUpdate, setSavingClientAutoUpdate] = useState(false);
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
     data.devices.map((device) => device.id)
   );
@@ -218,6 +229,24 @@ export const SettingsPage = ({
     from: new Date(today.getFullYear() - 1, today.getMonth(), today.getDate()),
     to: today,
   });
+  useEffect(() => {
+    if (section !== "general") {
+      return;
+    }
+    const loadClientAutoUpdate = async (): Promise<void> => {
+      try {
+        const response = await apiFetch("/api/v1/settings/client-auto-update");
+        setClientAutoUpdate(
+          response.ok
+            ? ((await response.json()) as ClientAutoUpdateSettings)
+            : undefined
+        );
+      } catch {
+        setClientAutoUpdate(undefined);
+      }
+    };
+    void loadClientAutoUpdate();
+  }, [section]);
   useEffect(() => {
     if (section !== "devices") {
       return;
@@ -282,6 +311,26 @@ export const SettingsPage = ({
     link.click();
     URL.revokeObjectURL(url);
   };
+  const saveClientAutoUpdate = async (): Promise<void> => {
+    if (!clientAutoUpdate) {
+      return;
+    }
+    setSavingClientAutoUpdate(true);
+    try {
+      const response = await apiFetch("/api/v1/settings/client-auto-update", {
+        body: JSON.stringify(clientAutoUpdate),
+        headers: { "content-type": "application/json" },
+        method: "PUT",
+      });
+      if (response.ok) {
+        setClientAutoUpdate(
+          (await response.json()) as ClientAutoUpdateSettings
+        );
+      }
+    } finally {
+      setSavingClientAutoUpdate(false);
+    }
+  };
   const revokeDashboardDevice = async (id: string): Promise<void> => {
     const response = await apiFetch(`/api/v1/dashboard-devices/${id}`, {
       method: "DELETE",
@@ -334,6 +383,108 @@ export const SettingsPage = ({
               </span>
             </span>
           </label>
+        </div>
+        <div className="mt-6 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Gateway-controlled client updates</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Ask opted-in clients to install releases only during their local
+            maintenance window. Clients can opt out locally at any time.
+          </p>
+          {clientAutoUpdate && (
+            <div className="mt-4 space-y-4">
+              <label
+                htmlFor="client-auto-update"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="client-auto-update"
+                  checked={clientAutoUpdate.enabled}
+                  onCheckedChange={(checked) =>
+                    setClientAutoUpdate({
+                      ...clientAutoUpdate,
+                      enabled: checked,
+                    })
+                  }
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Automatically update clients
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Updates are checksum-verified and clients restart after a
+                    successful update.
+                  </span>
+                </span>
+              </label>
+              <div className="grid gap-3 sm:grid-cols-3">
+                <label
+                  htmlFor="client-update-channel"
+                  className="grid gap-1 text-sm"
+                >
+                  Channel
+                  <select
+                    id="client-update-channel"
+                    value={clientAutoUpdate.channel}
+                    className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
+                    onChange={(event) =>
+                      setClientAutoUpdate({
+                        ...clientAutoUpdate,
+                        channel: event.target.value as "nightly" | "stable",
+                      })
+                    }
+                  >
+                    <option value="stable">Stable</option>
+                    <option value="nightly">Nightly</option>
+                  </select>
+                </label>
+                <label
+                  htmlFor="client-update-start-hour"
+                  className="grid gap-1 text-sm"
+                >
+                  Start hour (local)
+                  <Input
+                    id="client-update-start-hour"
+                    min="0"
+                    max="23"
+                    type="number"
+                    value={clientAutoUpdate.windowStartHour}
+                    onChange={(event) =>
+                      setClientAutoUpdate({
+                        ...clientAutoUpdate,
+                        windowStartHour: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+                <label
+                  htmlFor="client-update-end-hour"
+                  className="grid gap-1 text-sm"
+                >
+                  End hour (local)
+                  <Input
+                    id="client-update-end-hour"
+                    min="0"
+                    max="23"
+                    type="number"
+                    value={clientAutoUpdate.windowEndHour}
+                    onChange={(event) =>
+                      setClientAutoUpdate({
+                        ...clientAutoUpdate,
+                        windowEndHour: Number(event.target.value),
+                      })
+                    }
+                  />
+                </label>
+              </div>
+              <Button
+                disabled={savingClientAutoUpdate}
+                size="sm"
+                onClick={saveClientAutoUpdate}
+              >
+                {savingClientAutoUpdate ? "Saving…" : "Save update settings"}
+              </Button>
+            </div>
+          )}
         </div>
       </section>
     );

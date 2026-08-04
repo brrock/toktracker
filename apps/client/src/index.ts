@@ -5,6 +5,7 @@ import { mkdir } from "node:fs/promises";
 import { hostname, platform } from "node:os";
 import { join, dirname } from "node:path";
 
+import { autoUpdateClient } from "@toktracker/cli/client";
 import { encryptPayload, isIngestRequest } from "@toktracker/shared";
 import type {
   IngestRequest,
@@ -39,6 +40,8 @@ const MAX_BATCH_UNENCRYPTED_BYTES = 15 * 1024 * 1024;
 const MAX_BATCH_SESSIONS = 10_000;
 const MAX_BATCH_MESSAGES = 100_000;
 const MAX_BATCH_SOURCE_UPDATES = 10_000;
+const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
 const cleanSessionTitle = (value: unknown): string | undefined => {
   if (typeof value !== "string") {
@@ -609,7 +612,73 @@ async function uploadPlan(plan: SyncPlan) {
   await flush();
 }
 
+interface ClientUpdatePolicy {
+  channel: "nightly" | "stable";
+  enabled: boolean;
+  windowEndHour: number;
+  windowStartHour: number;
+}
+
+const isInUpdateWindow = (policy: ClientUpdatePolicy): boolean => {
+  const hour = new Date().getHours();
+  return policy.windowStartHour < policy.windowEndHour
+    ? hour >= policy.windowStartHour && hour < policy.windowEndHour
+    : hour >= policy.windowStartHour || hour < policy.windowEndHour;
+};
+
+const settingTimestamp = (key: string): number =>
+  Number(
+    (
+      db.query("SELECT value FROM settings WHERE key=?").get(key) as {
+        value: string;
+      } | null
+    )?.value ?? 0
+  );
+const setSettingTimestamp = (key: string): void => {
+  db.query(
+    "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+  ).run(key, String(Date.now()));
+};
+
+const applyGatewayUpdatePolicy = async (): Promise<void> => {
+  if (process.env.TOKTRACKER_GATEWAY_AUTO_UPDATE === "0") {
+    return;
+  }
+  if (
+    Date.now() - settingTimestamp("gateway_update_policy_checked_at") <
+    UPDATE_POLICY_CHECK_INTERVAL_MS
+  ) {
+    return;
+  }
+  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  try {
+    const response = await fetch(`${endpoint}/api/v1/client-update-policy`, {
+      headers: accessKey ? { authorization: `Bearer ${accessKey}` } : undefined,
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!response.ok) {
+      return;
+    }
+    setSettingTimestamp("gateway_update_policy_checked_at");
+    const policy = (await response.json()) as ClientUpdatePolicy;
+    if (
+      !policy.enabled ||
+      !isInUpdateWindow(policy) ||
+      Date.now() - settingTimestamp("gateway_update_attempted_at") <
+        UPDATE_ATTEMPT_INTERVAL_MS
+    ) {
+      return;
+    }
+    setSettingTimestamp("gateway_update_attempted_at");
+    await autoUpdateClient(policy.channel);
+  } catch (error) {
+    console.warn("TokTracker: gateway-controlled update check failed", error);
+  }
+};
+
 async function sync() {
+  await applyGatewayUpdatePolicy();
   const plan = await changedSessions();
   const mustContactGateway =
     plan.sessions.length > 0 ||

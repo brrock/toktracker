@@ -50,6 +50,12 @@ const channel = (value: string): string => {
   }
   return value;
 };
+const boolean = (value: string): string => {
+  if (value !== "0" && value !== "1") {
+    throw new Error("Value must be 0 (off) or 1 (on)");
+  }
+  return value;
+};
 const bindAddress = (value: string): string => {
   if (isIP(value) === 0) {
     throw new Error(
@@ -76,6 +82,10 @@ const CONFIG_FIELDS: Record<ServiceRole, Record<string, ConfigField>> = {
     ...COMMON_FIELDS,
     "data-dir": { environmentKey: "TOKTRACKER_DATA_DIR" },
     "device-name": { environmentKey: "TOKTRACKER_DEVICE_NAME" },
+    "gateway-auto-update": {
+      environmentKey: "TOKTRACKER_GATEWAY_AUTO_UPDATE",
+      validate: boolean,
+    },
     "gateway-url": {
       environmentKey: "TOKTRACKER_GATEWAY",
       validate: normalizeUrl,

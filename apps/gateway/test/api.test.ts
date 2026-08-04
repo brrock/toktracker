@@ -166,6 +166,37 @@ describe("gateway API", () => {
     expect(reusedCode.status).toBe(401);
   });
 
+  test("serves dashboard-configured client update policies", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const unauthorized = await app.request(
+      "/api/v1/settings/client-auto-update"
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const headers = await pairDashboard(app, store);
+    const saved = await app.request("/api/v1/settings/client-auto-update", {
+      body: JSON.stringify({
+        channel: "nightly",
+        enabled: true,
+        windowEndHour: 4,
+        windowStartHour: 2,
+      }),
+      headers: { ...headers, "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(saved.status).toBe(200);
+
+    const policy = await app.request("/api/v1/client-update-policy");
+    expect(policy.status).toBe(200);
+    expect(await policy.json()).toEqual({
+      channel: "nightly",
+      enabled: true,
+      windowEndHour: 4,
+      windowStartHour: 2,
+    });
+  });
+
   test("rejects malformed ingestion and oversized declared bodies", async () => {
     const store = await testStore();
     const app = createApp(store, "");

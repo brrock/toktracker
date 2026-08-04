@@ -86,6 +86,8 @@ toktracker-gateway config set port 4310
 toktracker-gateway bind 100.78.66.1
 toktracker-client config set gateway-url http://server:3000
 toktracker-client config set interval-ms 120000
+# Opt this client out of gateway-managed automatic updates.
+toktracker-client config set gateway-auto-update 0
 toktracker-client config unset encryption-key
 
 # Update, downgrade, or choose an update channel
@@ -104,6 +106,10 @@ toktracker-gateway auth revoke <device-id>   # Sign out one browser
 ```
 
 A client validates a new gateway URL before saving it. Use `--skip-check` only when the gateway is temporarily unavailable.
+
+### Gateway-managed automatic updates
+
+In **Settings → General**, a gateway administrator can enable automatic client updates, choose the stable or nightly channel, and set a maintenance window (default 02:00–04:00). Each client evaluates that window in its own local time, checks at most once every 15 minutes, and updates at most once per day. The feature is off by default. Clients can always opt out locally with `toktracker-client config set gateway-auto-update 0`; setting it back to `1` opts in again.
 
 ### Migrating a legacy global installation
 
