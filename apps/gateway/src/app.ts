@@ -127,7 +127,9 @@ export const createApp = (
       context.req.path === "/api/v1/ingest" ||
       context.req.path === "/api/v1/client-update-policy";
     if (isClientRoute) {
-      if (accessKey && !hasSharedKey) {
+      const encryptedIngestCanAuthenticateItself =
+        context.req.path === "/api/v1/ingest";
+      if (accessKey && !hasSharedKey && !encryptedIngestCanAuthenticateItself) {
         return context.json(
           { error: "A valid ingestion key is required" },
           401
@@ -218,10 +220,12 @@ export const createApp = (
     } catch {
       return context.json({ error: "Invalid update settings" }, 400);
     }
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      return context.json({ error: "Invalid update settings" }, 400);
+    }
     const settings = body as Partial<ClientAutoUpdateSettings>;
     const { windowEndHour, windowStartHour } = settings;
     if (
-      !settings ||
       typeof settings.enabled !== "boolean" ||
       (settings.channel !== "stable" && settings.channel !== "nightly") ||
       typeof windowStartHour !== "number" ||
@@ -277,9 +281,19 @@ export const createApp = (
       return context.json({ error: "Invalid ingestion payload" }, 400);
     }
     const result = store.ingest(body);
-    return result.banned
-      ? context.json({ error: "This device has been banned" }, 403)
-      : context.json(result);
+    if (result.banned) {
+      return context.json({ error: "This device has been banned" }, 403);
+    }
+    if (result.replayed) {
+      return context.json(
+        { error: "Ingestion request was already applied" },
+        409
+      );
+    }
+    if (result.expired) {
+      return context.json({ error: "Ingestion request has expired" }, 400);
+    }
+    return context.json(result);
   });
   app.get("/api/v1/dashboard-devices", (context) =>
     context.json(store.dashboardDevices())

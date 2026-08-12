@@ -32,7 +32,9 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-const INDEX_SCHEMA_VERSION = 3;
+// Version 4 forces a complete source replacement so gateways heal rows that
+// older clients allowed the normalized store to compact.
+const INDEX_SCHEMA_VERSION = 4;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
@@ -169,7 +171,9 @@ const previousIndexVersion = (
   } | null
 )?.value;
 if (previousIndexVersion !== indexVersion) {
-  db.exec("DELETE FROM indexed_files");
+  db.exec(
+    "DELETE FROM indexed_sessions; UPDATE indexed_files SET mtime_ms=-1,size=-1"
+  );
   db.query(
     "INSERT INTO settings(key,value) VALUES('index_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
   ).run(indexVersion);
@@ -354,12 +358,14 @@ async function parse(source: Source, mtime: number): Promise<UsageMessage[]> {
 }
 
 interface ScanState {
+  companion?: string;
   sourcePath: string;
   mtime: number;
   size: number;
   hashes: Map<string, string>;
 }
 interface SyncPlan {
+  removedSources: string[];
   sessions: SessionSnapshot[];
   sourceUpdates: NonNullable<IngestRequest["sourceUpdates"]>;
   scans: ScanState[];
@@ -369,13 +375,29 @@ const sessionHash = (messages: UsageMessage[]) =>
   Bun.hash(JSON.stringify(messages)).toString(16);
 
 async function changedSessions(): Promise<SyncPlan> {
-  const plan: SyncPlan = { scans: [], sessions: [], sourceUpdates: [] };
+  const plan: SyncPlan = {
+    removedSources: [],
+    scans: [],
+    sessions: [],
+    sourceUpdates: [],
+  };
   const latestSessionTitles = await loadSessionTitles();
   const titlesChanged =
     sessionTitleFingerprint(sessionTitles) !==
     sessionTitleFingerprint(latestSessionTitles);
   sessionTitles = latestSessionTitles;
-  for (const source of await discover()) {
+  const sources = await discover();
+  const discoveredPaths = new Set(sources.map((source) => source.path));
+  const indexedPaths = db.query("SELECT path FROM indexed_files").all() as {
+    path: string;
+  }[];
+  plan.removedSources = indexedPaths
+    .map((row) => row.path)
+    .filter((path) => !discoveredPaths.has(path));
+  for (const sourcePath of plan.removedSources) {
+    plan.sourceUpdates.push({ mode: "replace", sourcePath });
+  }
+  for (const source of sources) {
     try {
       const fp = await fingerprint(source.path, source.companion);
       const known = db
@@ -434,6 +456,7 @@ async function changedSessions(): Promise<SyncPlan> {
         });
       }
       plan.scans.push({
+        companion: source.companion,
         hashes,
         mtime: fp.mtime,
         size: fp.size,
@@ -454,6 +477,12 @@ function commit(plan: SyncPlan) {
     "INSERT INTO indexed_sessions(source_path,session_id,content_hash) VALUES(?,?,?)"
   );
   db.transaction(() => {
+    for (const sourcePath of plan.removedSources) {
+      db.query("DELETE FROM indexed_sessions WHERE source_path=?").run(
+        sourcePath
+      );
+      db.query("DELETE FROM indexed_files WHERE path=?").run(sourcePath);
+    }
     for (const scan of plan.scans) {
       mark.run(scan.sourcePath, scan.mtime, scan.size, Date.now());
       db.query("DELETE FROM indexed_sessions WHERE source_path=?").run(
@@ -468,6 +497,32 @@ function commit(plan: SyncPlan) {
 
 const byteLength = (value: unknown) =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
+
+let warnedAboutInsecureGateway = false;
+const warnAboutInsecureGateway = (
+  endpoint: string,
+  accessKey?: string
+): void => {
+  if (!accessKey || warnedAboutInsecureGateway) {
+    return;
+  }
+  try {
+    const url = new URL(endpoint);
+    const isLoopback =
+      url.hostname === "localhost" ||
+      url.hostname === "[::1]" ||
+      url.hostname.startsWith("127.");
+    if (url.protocol === "https:" || isLoopback) {
+      return;
+    }
+    warnedAboutInsecureGateway = true;
+    console.warn(
+      "TokTracker: WARNING: the configured ingestion key may be exposed over non-loopback HTTP. Configure HTTPS for the gateway."
+    );
+  } catch {
+    // fetch() reports malformed gateway URLs with its normal error.
+  }
+};
 
 const validatePayload = (payload: IngestRequest): void => {
   const candidatePayload: unknown = payload;
@@ -524,14 +579,23 @@ async function upload(payload: IngestRequest, accessKey?: string) {
   ) {
     throw new Error("A single ingestion batch exceeds the gateway body limit");
   }
-  const response = await fetch(`${endpoint}/api/v1/ingest`, {
-    body: requestBody,
-    headers: {
-      "content-type": "application/json",
-      ...(accessKey ? { authorization: `Bearer ${accessKey}` } : {}),
-    },
-    method: "POST",
-  });
+  const send = (authorization?: string): Promise<Response> =>
+    fetch(`${endpoint}/api/v1/ingest`, {
+      body: requestBody,
+      headers: {
+        "content-type": "application/json",
+        ...(authorization ? { authorization } : {}),
+      },
+      method: "POST",
+    });
+  // Current gateways authenticate ingestion by successfully decrypting it, so
+  // the shared key does not need to travel in an HTTP header. Retry with the
+  // legacy header only when talking to an older gateway.
+  let response = await send();
+  if (response.status === 401 && accessKey) {
+    warnAboutInsecureGateway(endpoint, accessKey);
+    response = await send(`Bearer ${accessKey}`);
+  }
   if (!response.ok) {
     throw new Error(
       `Gateway rejected upload: ${response.status} ${await response.text()}`
@@ -561,7 +625,14 @@ async function uploadPlan(plan: SyncPlan) {
     if (batch.sessions.length === 0 && batch.sourceUpdates?.length === 0) {
       return;
     }
-    await upload(batch, accessKey);
+    await upload(
+      {
+        ...batch,
+        requestId: crypto.randomUUID(),
+        sentAt: Date.now(),
+      },
+      accessKey
+    );
     batch = { device, sessions: [], sourceUpdates: [] };
     batchMessageCount = 0;
   };
@@ -652,6 +723,7 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
   }
   const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
   const accessKey = process.env.TOKTRACKER_API_KEY;
+  warnAboutInsecureGateway(endpoint, accessKey);
   try {
     const response = await fetch(`${endpoint}/api/v1/client-update-policy`, {
       headers: accessKey ? { authorization: `Bearer ${accessKey}` } : undefined,
@@ -677,6 +749,25 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
   }
 };
 
+const planIsCurrent = async (plan: SyncPlan): Promise<boolean> => {
+  for (const scan of plan.scans) {
+    try {
+      const current = await fingerprint(scan.sourcePath, scan.companion);
+      if (current.mtime !== scan.mtime || current.size !== scan.size) {
+        return false;
+      }
+    } catch {
+      return false;
+    }
+  }
+  for (const sourcePath of plan.removedSources) {
+    if (await Bun.file(sourcePath).exists()) {
+      return false;
+    }
+  }
+  return true;
+};
+
 async function sync() {
   await applyGatewayUpdatePolicy();
   const plan = await changedSessions();
@@ -691,14 +782,27 @@ async function sync() {
     console.log("TokTracker: no changed sessions");
     return;
   }
+  if (!(await planIsCurrent(plan))) {
+    console.warn("TokTracker: sources changed during sync; rescanning");
+    return sync();
+  }
   await uploadPlan(plan);
   commit(plan);
   console.log(
     `TokTracker: uploaded ${plan.sessions.length} changed session(s)`
   );
 }
-await sync();
+let syncInFlight: Promise<void> | undefined;
+const serializedSync = (): Promise<void> => {
+  if (!syncInFlight) {
+    syncInFlight = sync().finally(() => {
+      syncInFlight = undefined;
+    });
+  }
+  return syncInFlight;
+};
+await serializedSync();
 const interval = Number(process.env.TOKTRACKER_INTERVAL_MS ?? 60_000);
 if (process.env.TOKTRACKER_ONCE !== "1") {
-  setInterval(() => sync().catch(console.error), interval);
+  setInterval(() => serializedSync().catch(console.error), interval);
 }

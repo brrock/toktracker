@@ -22,6 +22,7 @@ const pad = (value: number): string => value.toString().padStart(2, "0");
 const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
+const INGESTION_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 const SYNARA_HOST_CONTEXT =
   /<synara_host_context>[\s\S]*?<\/synara_host_context>/giu;
 
@@ -269,27 +270,6 @@ const sessionParts = (messages: UsageMessage[]): SessionUsagePart[] => {
   return parts;
 };
 
-const usageMessagesForParts = (messages: UsageMessage[]): UsageMessage[] =>
-  sessionParts(messages).map((part) => {
-    const source = messages.find(
-      (message) =>
-        message.modelId === part.model && message.providerId === part.provider
-    );
-    if (!source) {
-      throw new Error("Could not create session usage part");
-    }
-    return {
-      ...source,
-      cost: part.cost,
-      durationMs: part.lastSeen - part.startedAt,
-      messageCount: part.messages,
-      modelId: part.model,
-      providerId: part.provider,
-      timestamp: part.startedAt,
-      tokens: part.tokens,
-    };
-  });
-
 const summarizeGroups = (
   groups: Map<string, UsageMessage[]>
 ): Record<string, UsageDetail> =>
@@ -323,6 +303,8 @@ export class Store {
       CREATE TABLE IF NOT EXISTS dashboard_tokens (token_hash TEXT PRIMARY KEY, device_id TEXT NOT NULL, kind TEXT NOT NULL CHECK(kind IN ('access','refresh')), created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, FOREIGN KEY(device_id) REFERENCES dashboard_devices(id) ON DELETE CASCADE);
       CREATE INDEX IF NOT EXISTS dashboard_tokens_device ON dashboard_tokens(device_id);
       CREATE TABLE IF NOT EXISTS gateway_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS ingestion_requests (device_id TEXT NOT NULL, request_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(device_id,request_id));
+      CREATE INDEX IF NOT EXISTS ingestion_requests_received_at ON ingestion_requests(received_at);
     `);
     const deviceColumns = this.db.query("PRAGMA table_info(devices)").all() as {
       name: string;
@@ -392,9 +374,7 @@ export class Store {
           row.updated_at
         );
         const messages = JSON.parse(row.messages_json) as UsageMessage[];
-        for (const [index, message] of usageMessagesForParts(
-          messages
-        ).entries()) {
+        for (const [index, message] of messages.entries()) {
           Store.insertUsage(
             putUsage,
             row.device_id,
@@ -582,6 +562,12 @@ export class Store {
 
   ingest(payload: IngestRequest) {
     const now = Date.now();
+    if (
+      payload.sentAt !== undefined &&
+      Math.abs(now - payload.sentAt) > INGESTION_REQUEST_TTL_MS
+    ) {
+      return { accepted: 0, expired: true, receivedAt: now };
+    }
     const transaction = this.db.transaction(() => {
       const banned = this.db
         .query("SELECT banned_at FROM devices WHERE id=?")
@@ -599,6 +585,19 @@ export class Store {
           payload.device.platform,
           now
         );
+      if (payload.requestId) {
+        this.db
+          .query("DELETE FROM ingestion_requests WHERE received_at<?")
+          .run(now - INGESTION_REQUEST_TTL_MS);
+        const inserted = this.db
+          .query(
+            "INSERT OR IGNORE INTO ingestion_requests(device_id,request_id,received_at) VALUES(?,?,?)"
+          )
+          .run(payload.device.id, payload.requestId, now);
+        if (inserted.changes === 0) {
+          return "replay" as const;
+        }
+      }
       const put = this.db.query(
         "INSERT INTO sessions(device_id,source_path,source_mtime_ms,source_size,session_id,project,updated_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(device_id,source_path,session_id) DO UPDATE SET source_mtime_ms=excluded.source_mtime_ms,source_size=excluded.source_size,project=excluded.project,updated_at=excluded.updated_at"
       );
@@ -636,9 +635,7 @@ export class Store {
           now
         );
         deleteUsage.run(payload.device.id, s.sourcePath, s.sessionId);
-        for (const [index, message] of usageMessagesForParts(
-          s.messages
-        ).entries()) {
+        for (const [index, message] of s.messages.entries()) {
           Store.insertUsage(
             putUsage,
             payload.device.id,
@@ -651,9 +648,13 @@ export class Store {
       }
     });
     const accepted = transaction();
-    return accepted === false
-      ? { accepted: 0, banned: true, receivedAt: now }
-      : { accepted: payload.sessions.length, receivedAt: now };
+    if (accepted === false) {
+      return { accepted: 0, banned: true, receivedAt: now };
+    }
+    if (accepted === "replay") {
+      return { accepted: 0, receivedAt: now, replayed: true };
+    }
+    return { accepted: payload.sessions.length, receivedAt: now };
   }
 
   sessions(
@@ -857,8 +858,8 @@ export class Store {
       message.client,
       message.modelId,
       message.providerId,
-      null,
-      null,
+      message.workspaceKey ?? null,
+      message.workspaceLabel ?? null,
       message.timestamp,
       message.date,
       message.tokens.input,
@@ -870,8 +871,8 @@ export class Store {
       message.costSource,
       message.durationMs ?? null,
       message.messageCount,
-      null,
-      null,
+      message.agent ?? null,
+      message.dedupKey ?? null,
       cleanSessionTitle(message.sessionTitle) ?? null,
       message.isTurnStart ? 1 : 0
     );

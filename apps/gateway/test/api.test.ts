@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
+import { encryptPayload } from "@toktracker/shared";
 import type { IngestRequest } from "@toktracker/shared";
 
 import { createApp } from "../src/app";
@@ -195,6 +196,53 @@ describe("gateway API", () => {
       windowEndHour: 4,
       windowStartHour: 2,
     });
+  });
+
+  test("rejects non-object client update settings", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const headers = await pairDashboard(app, store);
+
+    const responses = await Promise.all(
+      [null, [], true, 1, "settings"].map(async (body) => {
+        const response = await app.request(
+          "/api/v1/settings/client-auto-update",
+          {
+            body: JSON.stringify(body),
+            headers: { ...headers, "content-type": "application/json" },
+            method: "PUT",
+          }
+        );
+        return { body: await response.json(), status: response.status };
+      })
+    );
+    for (const response of responses) {
+      expect(response.status).toBe(400);
+      expect(response.body).toEqual({ error: "Invalid update settings" });
+    }
+  });
+
+  test("authenticates encrypted ingestion without exposing the key and rejects replays", async () => {
+    const store = await testStore();
+    const app = createApp(store, "secret");
+    const payload = {
+      ...manySessions(1),
+      requestId: crypto.randomUUID(),
+      sentAt: Date.now(),
+    };
+    const body = JSON.stringify(await encryptPayload(payload, "secret"));
+    const request = () =>
+      app.request("/api/v1/ingest", {
+        body,
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+
+    const accepted = await request();
+    const replayed = await request();
+    expect(accepted.status).toBe(200);
+    expect(replayed.status).toBe(409);
+    expect(store.sessions("", [], [], 20)).toHaveLength(1);
   });
 
   test("rejects malformed ingestion and oversized declared bodies", async () => {

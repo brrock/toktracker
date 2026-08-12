@@ -162,7 +162,7 @@ describe("Store", () => {
     store.close();
   });
 
-  test("stores one usage part per consecutive model run", async () => {
+  test("creates compact usage parts from individually stored events", async () => {
     const { store } = await createStore();
     const first = message("session", 1_700_000_000_000);
     const second = {
@@ -199,6 +199,67 @@ describe("Store", () => {
     store.close();
   });
 
+  test("preserves event time buckets and per-message metadata", async () => {
+    const { dbPath, store } = await createStore();
+    const first = {
+      ...message("session", Date.UTC(2026, 0, 1, 23, 59)),
+      agent: "agent-one",
+      date: "2026-01-01",
+      dedupKey: "dedup-one",
+      workspaceKey: "workspace-one",
+      workspaceLabel: "Project One",
+    };
+    const second = {
+      ...message("session", Date.UTC(2026, 0, 2, 0, 1)),
+      agent: "agent-two",
+      date: "2026-01-02",
+      dedupKey: "dedup-two",
+      workspaceKey: "workspace-two",
+      workspaceLabel: "Project Two",
+    };
+    store.ingest({
+      device: { id: "device", name: "device", platform: "test" },
+      sessions: [
+        {
+          deviceId: "device",
+          messages: [first, second],
+          sessionId: "session",
+          sourceMtimeMs: 1,
+          sourcePath: "/session.jsonl",
+          sourceSize: 100,
+        },
+      ],
+    });
+
+    expect(store.summary([], "all").daily).toEqual([
+      { cost: 0.01, date: "2026-01-01", tokens: 15 },
+      { cost: 0.01, date: "2026-01-02", tokens: 15 },
+    ]);
+    const database = new Database(dbPath, { strict: true });
+    expect(
+      database
+        .query(
+          "SELECT workspace_key,workspace_label,agent,dedup_key FROM session_usage ORDER BY message_index"
+        )
+        .all()
+    ).toEqual([
+      {
+        agent: "agent-one",
+        dedup_key: "dedup-one",
+        workspace_key: "workspace-one",
+        workspace_label: "Project One",
+      },
+      {
+        agent: "agent-two",
+        dedup_key: "dedup-two",
+        workspace_key: "workspace-two",
+        workspace_label: "Project Two",
+      },
+    ]);
+    database.close();
+    store.close();
+  });
+
   test("removes Synara host context from session titles", async () => {
     const { store } = await createStore();
     store.ingest(
@@ -226,15 +287,45 @@ describe("Store", () => {
     legacy.exec(
       "CREATE TABLE devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL, last_seen INTEGER NOT NULL); CREATE TABLE sessions (device_id TEXT NOT NULL, source_path TEXT NOT NULL, source_mtime_ms REAL NOT NULL, source_size INTEGER NOT NULL, session_id TEXT NOT NULL, project TEXT, messages_json TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(device_id, source_path));"
     );
+    legacy
+      .query("INSERT INTO devices VALUES(?,?,?,?)")
+      .run("legacy", "legacy", "test", 1);
+    legacy.query("INSERT INTO sessions VALUES(?,?,?,?,?,?,?,?)").run(
+      "legacy",
+      "/legacy.jsonl",
+      1,
+      100,
+      "legacy-session",
+      "Legacy project",
+      JSON.stringify([
+        {
+          ...message("legacy-session", Date.UTC(2026, 0, 1, 23, 59)),
+          agent: "legacy-agent-one",
+          date: "2026-01-01",
+          workspaceLabel: "Legacy one",
+        },
+        {
+          ...message("legacy-session", Date.UTC(2026, 0, 2, 0, 1)),
+          agent: "legacy-agent-two",
+          date: "2026-01-02",
+          workspaceLabel: "Legacy two",
+        },
+      ]),
+      1
+    );
     legacy.close();
 
     const migrated = new Store(dbPath);
+    expect(migrated.summary([], "all").daily).toEqual([
+      { cost: 0.01, date: "2026-01-01", tokens: 15 },
+      { cost: 0.01, date: "2026-01-02", tokens: 15 },
+    ]);
     migrated.ingest(payload("device", "/source.db", "one"));
     migrated.ingest({
       ...payload("device", "/source.db", "two"),
       sourceUpdates: [{ mode: "patch", sourcePath: "/source.db" }],
     });
-    expect(migrated.sessions("", [], [], 20)).toHaveLength(2);
+    expect(migrated.sessions("", [], [], 20)).toHaveLength(3);
     migrated.close();
 
     const database = new Database(dbPath, { strict: true });
@@ -248,7 +339,7 @@ describe("Store", () => {
       database.query("SELECT COUNT(*) count FROM session_usage").get() as {
         count: number;
       }
-    ).toEqual({ count: 2 });
+    ).toEqual({ count: 4 });
     database.close();
   });
 });

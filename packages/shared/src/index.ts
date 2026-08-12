@@ -48,6 +48,10 @@ export interface SourceUpdate {
 
 export interface IngestRequest {
   device: { id: string; name: string; platform: string };
+  /** Present on newer clients so gateways can reject captured request replays. */
+  requestId?: string;
+  /** Unix time in milliseconds when this request was created. */
+  sentAt?: number;
   sessions: SessionSnapshot[];
   sourceUpdates?: SourceUpdate[];
 }
@@ -340,8 +344,15 @@ export const isIngestRequest = (value: unknown): value is IngestRequest => {
   if (!isRecord(value) || !isDevice(value.device)) {
     return false;
   }
-  const { device, sessions, sourceUpdates } = value;
+  const { device, requestId, sentAt, sessions, sourceUpdates } = value;
+  const hasRequestMetadata =
+    (requestId === undefined && sentAt === undefined) ||
+    (isBoundedString(requestId, MAX_SHORT_STRING_LENGTH) &&
+      typeof sentAt === "number" &&
+      Number.isSafeInteger(sentAt) &&
+      sentAt > 0);
   if (
+    !hasRequestMetadata ||
     !Array.isArray(sessions) ||
     sessions.length > MAX_SESSIONS ||
     !hasValidSourceUpdates(sourceUpdates) ||
