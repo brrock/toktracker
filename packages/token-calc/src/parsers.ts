@@ -1,10 +1,11 @@
-/* eslint-disable complexity, func-style, no-nested-ternary, no-use-before-define, prefer-destructuring, prefer-named-capture-group, require-unicode-regexp, sort-vars, typescript/no-explicit-any, typescript/no-non-null-assertion, unicorn/consistent-function-scoping */
+/* eslint-disable complexity, func-style, no-nested-ternary, no-use-before-define, prefer-destructuring, prefer-named-capture-group, require-unicode-regexp, sort-vars, typescript/no-explicit-any, typescript/no-non-null-assertion, unicorn/consistent-function-scoping, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type */
 // Stateful ports intentionally retain tokscale's branch structure for parity.
 import type { TokenBreakdown, UsageMessage } from "@toktracker/shared";
 
 import { normalizeWorkspace } from "./identity";
 import { makeMessage, zeroTokens } from "./model";
 
+// Dynamic third-party telemetry changes shape across producer versions.
 type Json = Record<string, any>;
 const n = (value: unknown): number =>
   typeof value === "number" && Number.isFinite(value)

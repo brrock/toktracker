@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 export interface TokenBreakdown {
   input: number;
   output: number;
@@ -94,8 +96,8 @@ const encryptionKey = async (secret: string): Promise<CryptoKey> => {
   ]);
 };
 
-export const encryptPayload = async (
-  value: unknown,
+export const encryptPayload = async <Value>(
+  value: Value,
   secret: string
 ): Promise<EncryptedPayload> => {
   const initializationVector = crypto.getRandomValues(new Uint8Array(12));
@@ -113,10 +115,13 @@ export const encryptPayload = async (
   };
 };
 
+const jsonValueSchema = z.json();
+export type JsonValue = z.infer<typeof jsonValueSchema>;
+
 export const decryptPayload = async (
   value: EncryptedPayload,
   secret: string
-): Promise<unknown> => {
+): Promise<JsonValue> => {
   const key = await encryptionKey(secret);
   const decrypted = await crypto.subtle.decrypt(
     {
@@ -126,22 +131,20 @@ export const decryptPayload = async (
     key,
     base64ToBytes(value.payload)
   );
-  return JSON.parse(new TextDecoder().decode(decrypted)) as unknown;
+  return jsonValueSchema.parse(JSON.parse(new TextDecoder().decode(decrypted)));
 };
 
 const MAX_ENCRYPTED_PAYLOAD_LENGTH = 22 * 1024 * 1024;
-export const isEncryptedPayload = (value: unknown): value is EncryptedPayload =>
-  Boolean(
-    value &&
-    typeof value === "object" &&
-    (value as Partial<EncryptedPayload>).encrypted === true &&
-    typeof (value as Partial<EncryptedPayload>).initializationVector ===
-      "string" &&
-    (value as Partial<EncryptedPayload>).initializationVector?.length === 16 &&
-    typeof (value as Partial<EncryptedPayload>).payload === "string" &&
-    ((value as Partial<EncryptedPayload>).payload?.length ?? 0) <=
-      MAX_ENCRYPTED_PAYLOAD_LENGTH
-  );
+const encryptedPayloadSchema = z.object({
+  encrypted: z.literal(true),
+  initializationVector: z.string().length(16),
+  payload: z.string().max(MAX_ENCRYPTED_PAYLOAD_LENGTH),
+});
+
+export const isEncryptedPayload = <Value>(
+  value: Value
+): value is Value & EncryptedPayload =>
+  encryptedPayloadSchema.safeParse(value).success;
 
 export interface TimeSeriesPoint {
   date: string;
@@ -233,136 +236,103 @@ const MAX_SOURCE_UPDATES = 10_000;
 const MAX_SHORT_STRING_LENGTH = 512;
 const MAX_PATH_LENGTH = 4096;
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  Boolean(value && typeof value === "object" && !Array.isArray(value));
-const isBoundedString = (value: unknown, maximum: number): value is string =>
-  typeof value === "string" && value.length > 0 && value.length <= maximum;
-const isOptionalString = (value: unknown, maximum: number): boolean =>
-  value === undefined || (typeof value === "string" && value.length <= maximum);
-const isFiniteNonNegative = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0;
-const isFiniteNumber = (value: unknown): value is number =>
-  typeof value === "number" && Number.isFinite(value);
+const boundedStringSchema = (maximum: number) => z.string().min(1).max(maximum);
+const optionalStringSchema = (maximum: number) => z.string().max(maximum);
+const finiteNonNegativeSchema = z.number().finite().nonnegative();
+const safeNonNegativeIntegerSchema = z.number().int().safe().nonnegative();
 
-const isTokenBreakdown = (value: unknown): value is TokenBreakdown =>
-  isRecord(value) &&
-  isFiniteNonNegative(value.input) &&
-  isFiniteNonNegative(value.output) &&
-  isFiniteNonNegative(value.cacheRead) &&
-  isFiniteNonNegative(value.cacheWrite) &&
-  isFiniteNonNegative(value.reasoning);
+const tokenBreakdownSchema = z.object({
+  cacheRead: finiteNonNegativeSchema,
+  cacheWrite: finiteNonNegativeSchema,
+  input: finiteNonNegativeSchema,
+  output: finiteNonNegativeSchema,
+  reasoning: finiteNonNegativeSchema,
+});
 
-const hasValidMessageStrings = (
-  value: Record<string, unknown>,
-  expectedSessionId: string
-): boolean =>
-  isBoundedString(value.client, MAX_SHORT_STRING_LENGTH) &&
-  isBoundedString(value.modelId, MAX_SHORT_STRING_LENGTH) &&
-  isBoundedString(value.providerId, MAX_SHORT_STRING_LENGTH) &&
-  value.sessionId === expectedSessionId &&
-  isOptionalString(value.workspaceKey, MAX_PATH_LENGTH) &&
-  isOptionalString(value.workspaceLabel, MAX_PATH_LENGTH) &&
-  isBoundedString(value.date, MAX_SHORT_STRING_LENGTH) &&
-  isOptionalString(value.agent, MAX_SHORT_STRING_LENGTH) &&
-  isOptionalString(value.dedupKey, MAX_PATH_LENGTH) &&
-  isOptionalString(value.sessionTitle, MAX_PATH_LENGTH);
+const usageMessageSchema = z.object({
+  agent: optionalStringSchema(MAX_SHORT_STRING_LENGTH).optional(),
+  client: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+  cost: finiteNonNegativeSchema,
+  costSource: z.enum(["unknown", "providerReported", "estimated"]),
+  date: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+  dedupKey: optionalStringSchema(MAX_PATH_LENGTH).optional(),
+  durationMs: finiteNonNegativeSchema.optional(),
+  isTurnStart: z.boolean(),
+  messageCount: safeNonNegativeIntegerSchema,
+  modelId: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+  providerId: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+  sessionId: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+  sessionTitle: optionalStringSchema(MAX_PATH_LENGTH).optional(),
+  timestamp: z.number().finite(),
+  tokens: tokenBreakdownSchema,
+  workspaceKey: optionalStringSchema(MAX_PATH_LENGTH).optional(),
+  workspaceLabel: optionalStringSchema(MAX_PATH_LENGTH).optional(),
+});
 
-const hasValidMessageUsage = (value: Record<string, unknown>): boolean =>
-  isFiniteNumber(value.timestamp) &&
-  isTokenBreakdown(value.tokens) &&
-  isFiniteNonNegative(value.cost) &&
-  (value.costSource === "unknown" ||
-    value.costSource === "providerReported" ||
-    value.costSource === "estimated") &&
-  (value.durationMs === undefined || isFiniteNonNegative(value.durationMs)) &&
-  isFiniteNonNegative(value.messageCount) &&
-  Number.isSafeInteger(value.messageCount) &&
-  typeof value.isTurnStart === "boolean";
-
-const isUsageMessage = (
-  value: unknown,
-  expectedSessionId: string
-): value is UsageMessage =>
-  isRecord(value) &&
-  hasValidMessageStrings(value, expectedSessionId) &&
-  hasValidMessageUsage(value);
-
-const isSourceUpdate = (value: unknown): value is SourceUpdate => {
-  if (!isRecord(value)) {
-    return false;
-  }
-  if (
-    !isBoundedString(value.sourcePath, MAX_PATH_LENGTH) ||
-    (value.mode !== "replace" && value.mode !== "patch")
-  ) {
-    return false;
-  }
-  if (value.removedSessionIds === undefined) {
-    return true;
-  }
-  return (
-    value.mode === "patch" &&
-    Array.isArray(value.removedSessionIds) &&
-    value.removedSessionIds.length <= MAX_SESSIONS &&
-    value.removedSessionIds.every((sessionId) =>
-      isBoundedString(sessionId, MAX_SHORT_STRING_LENGTH)
-    )
-  );
-};
-
-const isDevice = (value: unknown): value is IngestRequest["device"] =>
-  isRecord(value) &&
-  isBoundedString(value.id, MAX_SHORT_STRING_LENGTH) &&
-  isBoundedString(value.name, MAX_SHORT_STRING_LENGTH) &&
-  isBoundedString(value.platform, MAX_SHORT_STRING_LENGTH);
-
-const isSessionSnapshot = (
-  value: unknown,
-  expectedDeviceId: string
-): value is SessionSnapshot =>
-  isRecord(value) &&
-  value.deviceId === expectedDeviceId &&
-  isBoundedString(value.sourcePath, MAX_PATH_LENGTH) &&
-  isFiniteNonNegative(value.sourceMtimeMs) &&
-  isFiniteNonNegative(value.sourceSize) &&
-  Number.isSafeInteger(value.sourceSize) &&
-  isBoundedString(value.sessionId, MAX_SHORT_STRING_LENGTH) &&
-  isOptionalString(value.project, MAX_PATH_LENGTH) &&
-  Array.isArray(value.messages) &&
-  value.messages.length > 0 &&
-  value.messages.every((message) =>
-    isUsageMessage(message, value.sessionId as string)
+const sessionSnapshotSchema = z
+  .object({
+    deviceId: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+    messages: z.array(usageMessageSchema).min(1),
+    project: optionalStringSchema(MAX_PATH_LENGTH).optional(),
+    sessionId: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+    sourceMtimeMs: finiteNonNegativeSchema,
+    sourcePath: boundedStringSchema(MAX_PATH_LENGTH),
+    sourceSize: safeNonNegativeIntegerSchema,
+  })
+  .refine(
+    ({ messages, sessionId }) =>
+      messages.every((message) => message.sessionId === sessionId),
+    { error: "Message session IDs must match their session" }
   );
 
-const hasValidSourceUpdates = (value: unknown): boolean =>
-  value === undefined ||
-  (Array.isArray(value) &&
-    value.length <= MAX_SOURCE_UPDATES &&
-    value.every(isSourceUpdate));
-
-export const isIngestRequest = (value: unknown): value is IngestRequest => {
-  if (!isRecord(value) || !isDevice(value.device)) {
-    return false;
-  }
-  const { device, requestId, sentAt, sessions, sourceUpdates } = value;
-  const hasRequestMetadata =
-    (requestId === undefined && sentAt === undefined) ||
-    (isBoundedString(requestId, MAX_SHORT_STRING_LENGTH) &&
-      typeof sentAt === "number" &&
-      Number.isSafeInteger(sentAt) &&
-      sentAt > 0);
-  if (
-    !hasRequestMetadata ||
-    !Array.isArray(sessions) ||
-    sessions.length > MAX_SESSIONS ||
-    !hasValidSourceUpdates(sourceUpdates) ||
-    !sessions.every((session) => isSessionSnapshot(session, device.id))
-  ) {
-    return false;
-  }
-  const messageCount = sessions.reduce(
-    (count, session) => count + (session as SessionSnapshot).messages.length,
-    0
+const sourceUpdateSchema = z
+  .object({
+    mode: z.enum(["replace", "patch"]),
+    removedSessionIds: z
+      .array(boundedStringSchema(MAX_SHORT_STRING_LENGTH))
+      .max(MAX_SESSIONS)
+      .optional(),
+    sourcePath: boundedStringSchema(MAX_PATH_LENGTH),
+  })
+  .refine(
+    ({ mode, removedSessionIds }) =>
+      removedSessionIds === undefined || mode === "patch",
+    { error: "Only patch updates may remove sessions" }
   );
-  return messageCount <= MAX_MESSAGES;
-};
+
+const ingestRequestSchema = z
+  .object({
+    device: z.object({
+      id: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+      name: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+      platform: boundedStringSchema(MAX_SHORT_STRING_LENGTH),
+    }),
+    requestId: boundedStringSchema(MAX_SHORT_STRING_LENGTH).optional(),
+    sentAt: z.number().int().safe().positive().optional(),
+    sessions: z.array(sessionSnapshotSchema).max(MAX_SESSIONS),
+    sourceUpdates: z
+      .array(sourceUpdateSchema)
+      .max(MAX_SOURCE_UPDATES)
+      .optional(),
+  })
+  .refine(
+    ({ requestId, sentAt }) =>
+      (requestId === undefined) === (sentAt === undefined),
+    { error: "Request ID and timestamp must be supplied together" }
+  )
+  .refine(
+    ({ device, sessions }) =>
+      sessions.every((session) => session.deviceId === device.id),
+    { error: "Session device IDs must match the request device" }
+  )
+  .refine(
+    ({ sessions }) =>
+      sessions.reduce((count, session) => count + session.messages.length, 0) <=
+      MAX_MESSAGES,
+    { error: "Request contains too many messages" }
+  );
+
+export const isIngestRequest = <Value>(
+  value: Value
+): value is Value & IngestRequest =>
+  ingestRequestSchema.safeParse(value).success;

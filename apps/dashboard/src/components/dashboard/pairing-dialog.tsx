@@ -1,6 +1,8 @@
 import type { FormEvent } from "react";
 import { useState } from "react";
 
+import { errorResponseSchema } from "@/lib/schemas";
+
 export const PairingDialog = () => {
   const [pairingCode, setPairingCode] = useState("");
   const [deviceName, setDeviceName] = useState(
@@ -22,10 +24,12 @@ export const PairingDialog = () => {
         method: "POST",
       });
       if (!response.ok) {
-        const body = (await response.json().catch(() => null)) as {
-          error?: string;
-        } | null;
-        setPairingError(body?.error ?? "Could not pair this device.");
+        const body = errorResponseSchema.safeParse(
+          await response.json().catch(() => null)
+        );
+        setPairingError(
+          body.success ? body.data.error : "Could not pair this device."
+        );
         return;
       }
       window.location.reload();

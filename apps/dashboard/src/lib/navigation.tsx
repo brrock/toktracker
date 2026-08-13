@@ -5,6 +5,9 @@ import {
   NavLink as RouterNavLink,
   useSearchParams,
 } from "react-router-dom";
+import { z } from "zod";
+
+const stringDestinationSchema = z.string();
 
 export const pathWithFilters = (
   path: string,
@@ -32,19 +35,19 @@ export const pathWithFilters = (
 
 export const Link = (props: ComponentProps<typeof RouterLink>) => {
   const [searchParams] = useSearchParams();
-  const to =
-    typeof props.to === "string"
-      ? pathWithFilters(props.to, searchParams)
-      : props.to;
+  const destination = stringDestinationSchema.safeParse(props.to);
+  const to = destination.success
+    ? pathWithFilters(destination.data, searchParams)
+    : props.to;
   return <RouterLink {...props} to={to} />;
 };
 
 export const NavLink = (props: ComponentProps<typeof RouterNavLink>) => {
   const [searchParams] = useSearchParams();
-  const to =
-    typeof props.to === "string"
-      ? pathWithFilters(props.to, searchParams)
-      : props.to;
+  const destination = stringDestinationSchema.safeParse(props.to);
+  const to = destination.success
+    ? pathWithFilters(destination.data, searchParams)
+    : props.to;
   return <RouterNavLink {...props} to={to} />;
 };
 

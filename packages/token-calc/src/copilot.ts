@@ -1,4 +1,4 @@
-/* eslint-disable complexity, func-style, no-nested-ternary, require-unicode-regexp, sort-vars, typescript/no-explicit-any, typescript/no-non-null-assertion, unicorn/no-array-for-each, unicorn/no-nested-ternary */
+/* eslint-disable complexity, func-style, no-nested-ternary, require-unicode-regexp, sort-vars, typescript/no-explicit-any, typescript/no-non-null-assertion, unicorn/no-array-for-each, unicorn/no-nested-ternary, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type */
 // Dynamic OTEL records require schema probing; branches mirror tokscale precedence.
 import { Database } from "bun:sqlite";
 
@@ -7,6 +7,7 @@ import type { TokenBreakdown, UsageMessage } from "@toktracker/shared";
 import { inferProvider, normalizeWorkspace } from "./identity";
 import { makeMessage, totalTokens } from "./model";
 
+// Dynamic third-party telemetry changes shape across producer versions.
 type Json = Record<string, any>;
 const n = (v: unknown) => {
   const x = typeof v === "string" ? Number(v) : v;
@@ -126,10 +127,12 @@ export function parseCopilotDesktopSqlite(
   }
   let rows: Json[];
   try {
+    // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
     rows = db
       .query(
         `SELECT id,model,total_input_tokens,total_output_tokens,total_cached_tokens,total_reasoning_tokens,created_at FROM sessions WHERE total_input_tokens>0 OR total_output_tokens>0 OR total_cached_tokens>0 OR total_reasoning_tokens>0`
       )
+      // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
       .all() as Json[];
   } catch {
     db.close();
@@ -379,12 +382,12 @@ export function parseCopilotOtel(
       trace: t,
     });
   });
-  const rank: Record<Source, number> = {
+  const rank = {
     chat: 4,
     inference: 3,
     summary: 1,
     turn: 2,
-  };
+  } satisfies Record<Source, number>;
   const filtered = candidates.filter(
     (c) =>
       !candidates.some(

@@ -13,6 +13,7 @@ import { EmptyState, Stat } from "@/components/dashboard/primitives";
 import { SessionTable } from "@/components/dashboard/session-table";
 import { apiFetch } from "@/lib/api";
 import { compact, matchesQuery, money } from "@/lib/dashboard";
+import { sessionSummaryListSchema, sessionSummarySchema } from "@/lib/schemas";
 
 export const SessionsPage = ({
   data,
@@ -51,7 +52,7 @@ export const SessionsPage = ({
         if (!response.ok) {
           throw new Error("Sessions request failed");
         }
-        setAllSessions((await response.json()) as SessionSummary[]);
+        setAllSessions(sessionSummaryListSchema.parse(await response.json()));
       } catch {
         if (!controller.signal.aborted) {
           setAllSessions([]);
@@ -105,7 +106,11 @@ export const SessionsPage = ({
       {loading ? (
         <EmptyState>Loading sessions…</EmptyState>
       ) : (
-        <SessionTable sessions={sessions} title="All sessions" />
+        <SessionTable
+          sessions={sessions}
+          showViewAll={false}
+          title="All sessions"
+        />
       )}
     </PageHeading>
   );
@@ -143,7 +148,7 @@ export const SessionPage = ({
         }
         setLoadedSession({
           id,
-          session: (await response.json()) as SessionSummary,
+          session: sessionSummarySchema.parse(await response.json()),
         });
       } catch {
         if (!controller.signal.aborted) {

@@ -1,13 +1,13 @@
 import { Bot, Boxes, Cpu } from "lucide-react";
 
-const AGENT_LOGOS: Record<string, string> = {
+const AGENT_LOGOS = {
   claude: "/agent-logos/client-claude.jpg",
   codex: "/agent-logos/client-openai.jpg",
   copilot: "/agent-logos/client-copilot.jpg",
   hermes: "/agent-logos/client-hermes.png",
   opencode: "/agent-logos/client-opencode.png",
   pi: "/agent-logos/client-pi.png",
-};
+} satisfies Record<string, string>;
 
 export const AgentLogo = ({
   name,
@@ -16,7 +16,9 @@ export const AgentLogo = ({
   name: string;
   size?: string;
 }) => {
-  const source = AGENT_LOGOS[name.toLowerCase()];
+  const source = Object.entries(AGENT_LOGOS).find(
+    ([agent]) => agent === name.toLowerCase()
+  )?.[1];
   return source ? (
     <img src={source} alt="" className={`${size} rounded object-cover`} />
   ) : (

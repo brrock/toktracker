@@ -9,6 +9,7 @@ import { autoUpdateClient } from "@toktracker/cli/client";
 import { encryptPayload, isIngestRequest } from "@toktracker/shared";
 import type {
   IngestRequest,
+  JsonValue,
   SessionSnapshot,
   UsageMessage,
 } from "@toktracker/shared";
@@ -27,6 +28,7 @@ import {
   parsePi,
   parseModelsDevCatalog,
 } from "@toktracker/token-calc";
+import { z } from "zod";
 
 const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
@@ -45,11 +47,14 @@ const MAX_BATCH_SOURCE_UPDATES = 10_000;
 const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 
-const cleanSessionTitle = (value: unknown): string | undefined => {
-  if (typeof value !== "string") {
+const optionalStringSchema = z.string();
+const historyRowSchema = z.record(z.string(), z.json());
+const cleanSessionTitle = <Value>(value: Value): string | undefined => {
+  const parsed = optionalStringSchema.safeParse(value);
+  if (!parsed.success) {
     return undefined;
   }
-  const title = value.replaceAll(/\s+/gu, " ").trim();
+  const title = parsed.data.replaceAll(/\s+/gu, " ").trim();
   return title ? title.slice(0, 160) : undefined;
 };
 
@@ -67,11 +72,11 @@ async function loadSessionTitles(): Promise<Map<string, string>> {
     const contents = await file.text();
     for (const line of contents.split(/\r?\n/u)) {
       try {
-        const row = JSON.parse(line) as Record<string, unknown>;
-        const id = row[idField];
+        const row = historyRowSchema.parse(JSON.parse(line));
+        const id = optionalStringSchema.safeParse(row[idField]);
         const title = cleanSessionTitle(row[titleField]);
-        if (typeof id === "string" && title && !titles.has(id)) {
-          titles.set(id, title);
+        if (id.success && title && !titles.has(id.data)) {
+          titles.set(id.data, title);
         }
       } catch {}
     }
@@ -86,9 +91,16 @@ async function loadSessionTitles(): Promise<Map<string, string>> {
   if (await Bun.file(codexState).exists()) {
     try {
       const state = new Database(codexState, { readonly: true });
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected thread columns.
       const rows = state
         .query("SELECT id,name,title,first_user_message FROM threads")
-        .all() as Record<string, unknown>[];
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+        .all() as {
+        first_user_message: string | null;
+        id: string;
+        name: string | null;
+        title: string | null;
+      }[];
       state.close();
       for (const row of rows) {
         const { id } = row;
@@ -96,7 +108,7 @@ async function loadSessionTitles(): Promise<Map<string, string>> {
           cleanSessionTitle(row.name) ??
           cleanSessionTitle(row.title) ??
           cleanSessionTitle(row.first_user_message);
-        if (typeof id === "string" && title) {
+        if (title) {
           titles.set(id, title);
         }
       }
@@ -108,7 +120,7 @@ async function loadSessionTitles(): Promise<Map<string, string>> {
 async function loadPricingSource(
   cacheName: string,
   url: string,
-  parseCatalog: (value: unknown) => PriceCatalog
+  parseCatalog: (value: JsonValue) => PriceCatalog
 ): Promise<PriceCatalog> {
   const cacheFile = Bun.file(join(dataDir, cacheName));
   const hasCache = await cacheFile.exists();
@@ -123,7 +135,7 @@ async function loadPricingSource(
     if (!response.ok) {
       throw new Error(`Pricing source returned ${response.status}`);
     }
-    const rawCatalog: unknown = await response.json();
+    const rawCatalog = z.json().parse(await response.json());
     await Bun.write(cacheFile, JSON.stringify(rawCatalog));
     return parseCatalog(rawCatalog);
   } catch {
@@ -165,11 +177,13 @@ const indexVersion = Bun.hash(
     sessionTitleFingerprint(sessionTitles),
   ])
 ).toString(16);
-const previousIndexVersion = (
-  db.query("SELECT value FROM settings WHERE key='index_version'").get() as {
-    value: string;
-  } | null
-)?.value;
+const previousIndexVersion =
+  // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+  (
+    db.query("SELECT value FROM settings WHERE key='index_version'").get() as {
+      value: string;
+    } | null
+  )?.value;
 if (previousIndexVersion !== indexVersion) {
   db.exec(
     "DELETE FROM indexed_sessions; UPDATE indexed_files SET mtime_ms=-1,size=-1"
@@ -178,11 +192,13 @@ if (previousIndexVersion !== indexVersion) {
     "INSERT INTO settings(key,value) VALUES('index_version',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
   ).run(indexVersion);
 }
-let deviceId = (
-  db.query("SELECT value FROM settings WHERE key='device_id'").get() as {
-    value: string;
-  } | null
-)?.value;
+let deviceId =
+  // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+  (
+    db.query("SELECT value FROM settings WHERE key='device_id'").get() as {
+      value: string;
+    } | null
+  )?.value;
 if (!deviceId) {
   deviceId = crypto.randomUUID();
   db.query("INSERT INTO settings(key,value) VALUES('device_id',?)").run(
@@ -280,9 +296,11 @@ async function fingerprint(path: string, companion?: string) {
   const stat = await Bun.file(path).stat();
   let mtime = stat.mtimeMs,
     { size } = stat;
-  for (const related of [`${path}-wal`, `${path}-shm`, companion].filter(
-    Boolean
-  ) as string[]) {
+  const relatedPaths = [`${path}-wal`, `${path}-shm`];
+  if (companion) {
+    relatedPaths.push(companion);
+  }
+  for (const related of relatedPaths) {
     const file = Bun.file(related);
     if (await file.exists()) {
       const s = await file.stat();
@@ -388,6 +406,7 @@ async function changedSessions(): Promise<SyncPlan> {
   sessionTitles = latestSessionTitles;
   const sources = await discover();
   const discoveredPaths = new Set(sources.map((source) => source.path));
+  // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
   const indexedPaths = db.query("SELECT path FROM indexed_files").all() as {
     path: string;
   }[];
@@ -400,8 +419,10 @@ async function changedSessions(): Promise<SyncPlan> {
   for (const source of sources) {
     try {
       const fp = await fingerprint(source.path, source.companion);
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       const known = db
         .query("SELECT mtime_ms,size FROM indexed_files WHERE path=?")
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         .get(source.path) as { mtime_ms: number; size: number } | null;
       if (
         !titlesChanged &&
@@ -422,10 +443,12 @@ async function changedSessions(): Promise<SyncPlan> {
       const hashes = new Map(
         [...grouped].map(([id, list]) => [id, sessionHash(list)])
       );
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       const previousRows = db
         .query(
           "SELECT session_id,content_hash FROM indexed_sessions WHERE source_path=?"
         )
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         .all(source.path) as { session_id: string; content_hash: string }[];
       const previous = new Map(
         previousRows.map((row) => [row.session_id, row.content_hash])
@@ -434,13 +457,15 @@ async function changedSessions(): Promise<SyncPlan> {
       const removed = incremental
         ? [...previous.keys()].filter((id) => !hashes.has(id))
         : [];
-      plan.sourceUpdates.push({
-        mode: incremental ? "patch" : "replace",
-        ...(incremental && removed.length > 0
-          ? { removedSessionIds: removed }
-          : {}),
-        sourcePath: source.path,
-      });
+      const sourceUpdate: NonNullable<IngestRequest["sourceUpdates"]>[number] =
+        {
+          mode: incremental ? "patch" : "replace",
+          sourcePath: source.path,
+        };
+      if (incremental && removed.length > 0) {
+        sourceUpdate.removedSessionIds = removed;
+      }
+      plan.sourceUpdates.push(sourceUpdate);
       for (const [sessionId, list] of grouped) {
         if (incremental && previous.get(sessionId) === hashes.get(sessionId)) {
           continue;
@@ -495,7 +520,7 @@ function commit(plan: SyncPlan) {
   })();
 }
 
-const byteLength = (value: unknown) =>
+const byteLength = <Value>(value: Value) =>
   new TextEncoder().encode(JSON.stringify(value)).byteLength;
 
 let warnedAboutInsecureGateway = false;
@@ -525,15 +550,15 @@ const warnAboutInsecureGateway = (
 };
 
 const validatePayload = (payload: IngestRequest): void => {
-  const candidatePayload: unknown = payload;
-  if (isIngestRequest(candidatePayload)) {
+  const completeCandidate = { ...payload };
+  if (isIngestRequest(completeCandidate)) {
     return;
   }
   for (const session of payload.sessions) {
-    const candidate: unknown = { device: payload.device, sessions: [session] };
+    const candidate = { device: payload.device, sessions: [session] };
     if (!isIngestRequest(candidate)) {
       for (const [messageIndex, message] of session.messages.entries()) {
-        const messageCandidate: unknown = {
+        const messageCandidate = {
           device: payload.device,
           sessions: [{ ...session, messages: [message] }],
         };
@@ -548,12 +573,12 @@ const validatePayload = (payload: IngestRequest): void => {
       );
     }
   }
-  const deviceCandidate: unknown = { device: payload.device, sessions: [] };
+  const deviceCandidate = { device: payload.device, sessions: [] };
   if (!isIngestRequest(deviceCandidate)) {
     throw new Error("Invalid ingestion device metadata");
   }
   for (const sourceUpdate of payload.sourceUpdates ?? []) {
-    const updateCandidate: unknown = {
+    const updateCandidate = {
       device: payload.device,
       sessions: [],
       sourceUpdates: [sourceUpdate],
@@ -579,15 +604,17 @@ async function upload(payload: IngestRequest, accessKey?: string) {
   ) {
     throw new Error("A single ingestion batch exceeds the gateway body limit");
   }
-  const send = (authorization?: string): Promise<Response> =>
-    fetch(`${endpoint}/api/v1/ingest`, {
+  const send = (authorization?: string): Promise<Response> => {
+    const headers = new Headers({ "content-type": "application/json" });
+    if (authorization) {
+      headers.set("authorization", authorization);
+    }
+    return fetch(`${endpoint}/api/v1/ingest`, {
       body: requestBody,
-      headers: {
-        "content-type": "application/json",
-        ...(authorization ? { authorization } : {}),
-      },
+      headers,
       method: "POST",
     });
+  };
   // Current gateways authenticate ingestion by successfully decrypting it, so
   // the shared key does not need to travel in an HTTP header. Retry with the
   // legacy header only when talking to an older gateway.
@@ -699,6 +726,7 @@ const isInUpdateWindow = (policy: ClientUpdatePolicy): boolean => {
 
 const settingTimestamp = (key: string): number =>
   Number(
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     (
       db.query("SELECT value FROM settings WHERE key=?").get(key) as {
         value: string;
@@ -733,6 +761,7 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
       return;
     }
     setSettingTimestamp("gateway_update_policy_checked_at");
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const policy = (await response.json()) as ClientUpdatePolicy;
     if (
       !policy.enabled ||

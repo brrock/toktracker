@@ -90,7 +90,8 @@ export const readConfig = async (
     const key = line.slice(0, separator);
     const serializedValue = line.slice(separator + 1);
     try {
-      values[key] = JSON.parse(serializedValue) as string;
+      const parsedValue = JSON.parse(serializedValue);
+      values[key] = String(parsedValue);
     } catch {
       values[key] = serializedValue;
     }

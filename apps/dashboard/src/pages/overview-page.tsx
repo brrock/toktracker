@@ -9,6 +9,7 @@ import {
 import { Card, EmptyState, Stat } from "@/components/dashboard/primitives";
 import { SessionTable } from "@/components/dashboard/session-table";
 import { RANGE_OPTIONS, compact, money } from "@/lib/dashboard";
+import { chartMetricSchema, timeRangeSchema } from "@/lib/schemas";
 
 export const OverviewPage = ({
   data,
@@ -43,7 +44,9 @@ export const OverviewPage = ({
         <select
           id="overview-range"
           value={range}
-          onChange={(event) => setRange(event.target.value as TimeRange)}
+          onChange={(event) =>
+            setRange(timeRangeSchema.parse(event.target.value))
+          }
           className="h-9 rounded-md border bg-card px-3 text-xs font-medium text-foreground outline-none focus:ring-2 focus:ring-primary/30"
         >
           {RANGE_OPTIONS.map((option) => (
@@ -105,7 +108,7 @@ export const OverviewPage = ({
               id="model-metric"
               value={modelMetric}
               onChange={(event) =>
-                setModelMetric(event.target.value as "tokens" | "cost")
+                setModelMetric(chartMetricSchema.parse(event.target.value))
               }
               className="h-8 rounded-md border bg-background px-2 text-xs"
             >

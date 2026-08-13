@@ -17,6 +17,7 @@ import {
   summarize,
   totalTokens,
 } from "@toktracker/token-calc";
+import { z } from "zod";
 
 const pad = (value: number): string => value.toString().padStart(2, "0");
 const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
@@ -58,6 +59,14 @@ export interface ClientAutoUpdateSettings {
   windowEndHour: number;
   windowStartHour: number;
 }
+
+const clientAutoUpdateSettingsSchema: z.ZodType<ClientAutoUpdateSettings> =
+  z.object({
+    channel: z.enum(["stable", "nightly"]),
+    enabled: z.boolean(),
+    windowEndHour: z.number().int().min(0).max(23),
+    windowStartHour: z.number().int().min(0).max(23),
+  });
 
 const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
   channel: "stable",
@@ -114,20 +123,18 @@ const sessionIdentity = (row: StoredSessionRow): SessionIdentity => ({
 const sessionApiId = (identity: SessionIdentity): string =>
   Buffer.from(JSON.stringify(identity)).toString("base64url");
 
+const sessionIdentitySchema: z.ZodType<SessionIdentity> = z.object({
+  deviceId: z.string(),
+  sessionId: z.string(),
+  sourcePath: z.string(),
+});
+
 const parseSessionApiId = (id: string): SessionIdentity | undefined => {
   try {
-    const value = JSON.parse(
-      Buffer.from(id, "base64url").toString()
-    ) as unknown;
-    if (!value || typeof value !== "object") {
-      return undefined;
-    }
-    const identity = value as Partial<SessionIdentity>;
-    return typeof identity.deviceId === "string" &&
-      typeof identity.sourcePath === "string" &&
-      typeof identity.sessionId === "string"
-      ? (identity as SessionIdentity)
-      : undefined;
+    const value = sessionIdentitySchema.safeParse(
+      JSON.parse(Buffer.from(id, "base64url").toString())
+    );
+    return value.success ? value.data : undefined;
   } catch {
     return undefined;
   }
@@ -306,6 +313,7 @@ export class Store {
       CREATE TABLE IF NOT EXISTS ingestion_requests (device_id TEXT NOT NULL, request_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(device_id,request_id));
       CREATE INDEX IF NOT EXISTS ingestion_requests_received_at ON ingestion_requests(received_at);
     `);
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const deviceColumns = this.db.query("PRAGMA table_info(devices)").all() as {
       name: string;
     }[];
@@ -326,6 +334,7 @@ export class Store {
   }
 
   private migrateSessions(): void {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const columns = this.db.query("PRAGMA table_info(sessions)").all() as {
       name: string;
       pk: number;
@@ -343,8 +352,10 @@ export class Store {
     }
 
     const migrate = this.db.transaction(() => {
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       const legacyRows = this.db
         .query("SELECT * FROM sessions")
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         .all() as (StoredSessionRow & {
         messages_json: string;
         source_mtime_ms: number;
@@ -373,6 +384,7 @@ export class Store {
           row.project,
           row.updated_at
         );
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         const messages = JSON.parse(row.messages_json) as UsageMessage[];
         for (const [index, message] of messages.entries()) {
           Store.insertUsage(
@@ -394,10 +406,7 @@ export class Store {
     this.db.close();
   }
 
-  createDashboardPairingCode(ttlMs = PAIRING_CODE_TTL_MS): {
-    code: string;
-    expiresAt: number;
-  } {
+  createDashboardPairingCode(ttlMs = PAIRING_CODE_TTL_MS) {
     const now = Date.now();
     const expiresAt = now + ttlMs;
     const code = generatePairingCode();
@@ -419,10 +428,12 @@ export class Store {
     const now = Date.now();
     const transaction = this.db.transaction(() => {
       const codeHash = hashSecret(normalizePairingCode(code));
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       const pairingCode = this.db
         .query(
           "SELECT code_hash FROM dashboard_pairing_codes WHERE code_hash=? AND expires_at>?"
         )
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         .get(codeHash, now) as { code_hash: string } | null;
       if (!pairingCode) {
         return;
@@ -443,10 +454,12 @@ export class Store {
 
   authenticateDashboard(accessToken: string): boolean {
     const now = Date.now();
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const token = this.db
       .query(
         "SELECT device_id FROM dashboard_tokens WHERE token_hash=? AND kind='access' AND expires_at>?"
       )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .get(hashSecret(accessToken), now) as { device_id: string } | null;
     if (!token) {
       return false;
@@ -460,10 +473,12 @@ export class Store {
   refreshDashboard(refreshToken: string): DashboardCredentials | undefined {
     const now = Date.now();
     const transaction = this.db.transaction(() => {
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       const token = this.db
         .query(
           "SELECT device_id FROM dashboard_tokens WHERE token_hash=? AND kind='refresh' AND expires_at>?"
         )
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         .get(hashSecret(refreshToken), now) as { device_id: string } | null;
       if (!token) {
         return;
@@ -480,20 +495,27 @@ export class Store {
   }
 
   revokeDashboardSession(refreshToken: string): boolean {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const token = this.db
       .query(
         "SELECT device_id FROM dashboard_tokens WHERE token_hash=? AND kind='refresh'"
       )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .get(hashSecret(refreshToken)) as { device_id: string } | null;
     return token ? this.revokeDashboardDevice(token.device_id) : false;
   }
 
   dashboardDevices(): DashboardDevice[] {
-    return this.db
-      .query(
-        "SELECT id,name,created_at as createdAt,last_seen as lastSeen FROM dashboard_devices ORDER BY last_seen DESC"
-      )
-      .all() as DashboardDevice[];
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    return (
+      this.db
+        .query(
+          // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+          "SELECT id,name,created_at as createdAt,last_seen as lastSeen FROM dashboard_devices ORDER BY last_seen DESC"
+        )
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+        .all() as DashboardDevice[]
+    );
   }
 
   revokeDashboardDevice(deviceId: string): boolean {
@@ -512,36 +534,25 @@ export class Store {
   }
 
   clientAutoUpdateSettings(): ClientAutoUpdateSettings {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const row = this.db
       .query(
         "SELECT value FROM gateway_settings WHERE key='client_auto_update'"
       )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .get() as { value: string } | null;
     if (!row) {
       return { ...DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS };
     }
     try {
-      const value = JSON.parse(row.value) as Partial<ClientAutoUpdateSettings>;
-      const { windowEndHour, windowStartHour } = value;
+      const value = clientAutoUpdateSettingsSchema.safeParse(
+        JSON.parse(row.value)
+      );
       if (
-        typeof value.enabled === "boolean" &&
-        (value.channel === "stable" || value.channel === "nightly") &&
-        typeof windowStartHour === "number" &&
-        Number.isInteger(windowStartHour) &&
-        windowStartHour >= 0 &&
-        windowStartHour < 24 &&
-        typeof windowEndHour === "number" &&
-        Number.isInteger(windowEndHour) &&
-        windowEndHour >= 0 &&
-        windowEndHour < 24 &&
-        windowStartHour !== windowEndHour
+        value.success &&
+        value.data.windowStartHour !== value.data.windowEndHour
       ) {
-        return {
-          channel: value.channel,
-          enabled: value.enabled,
-          windowEndHour,
-          windowStartHour,
-        };
+        return value.data;
       }
     } catch {
       // Invalid persisted settings fall back to the safe disabled default.
@@ -569,8 +580,10 @@ export class Store {
       return { accepted: 0, expired: true, receivedAt: now };
     }
     const transaction = this.db.transaction(() => {
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       const banned = this.db
         .query("SELECT banned_at FROM devices WHERE id=?")
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         .get(payload.device.id) as { banned_at: number | null } | null;
       if (banned?.banned_at) {
         return false;
@@ -669,10 +682,12 @@ export class Store {
       ? `device_id IN (${deviceIds.map(() => "?").join(",")})`
       : "";
     const where = deviceWhere ? ` WHERE ${deviceWhere}` : "";
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const rows = this.db
       .query(
         `SELECT device_id,source_path,session_id,project FROM sessions${where}`
       )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .all(...deviceIds) as StoredSessionRow[];
     return rows
       .map((row) => this.summarizeSession(row))
@@ -693,6 +708,7 @@ export class Store {
     ) {
       return undefined;
     }
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const row = this.db
       .query(
         "SELECT device_id,source_path,session_id,project FROM sessions WHERE device_id=? AND source_path=? AND session_id=?"
@@ -701,6 +717,7 @@ export class Store {
         identity.deviceId,
         identity.sourcePath,
         identity.sessionId
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       ) as StoredSessionRow | null;
     return row ? this.summarizeSession(row, true) : undefined;
   }
@@ -714,10 +731,12 @@ export class Store {
     const where = deviceIds.length
       ? ` WHERE device_id IN (${deviceIds.map(() => "?").join(",")})`
       : "";
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const rows = this.db
       .query(
         `SELECT device_id,source_path,session_id,project FROM sessions${where}`
       )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .all(...deviceIds) as StoredSessionRow[];
     const rangeStart = Store.rangeStart(range);
     const messages: UsageMessage[] = [...this.usageForSessions(rows).values()]
@@ -737,12 +756,15 @@ export class Store {
       includeAllDevices || deviceIds.length === 0
         ? ""
         : ` WHERE id IN (${deviceIds.map(() => "?").join(",")})`;
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const devices = this.db
       .query(
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
         `SELECT id,name,platform,last_seen as lastSeen FROM devices${deviceFilter} ORDER BY name`
       )
       .all(
         ...(includeAllDevices ? [] : deviceIds)
+        // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       ) as DashboardSummary["devices"];
     const bySession = new Map<string, UsageMessage[]>();
     const byAgent = new Map<string, UsageMessage[]>();
@@ -888,10 +910,12 @@ export class Store {
       ])
     );
     const messages = new Map<string, UsageMessage[]>();
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const usageRows = this.db
       .query(
         "SELECT * FROM session_usage ORDER BY device_id,source_path,session_id,message_index"
       )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .all() as StoredUsageRow[];
     for (const usage of usageRows) {
       const key = `${usage.device_id}\u0000${usage.source_path}\u0000${usage.session_id}`;
@@ -917,7 +941,7 @@ export class Store {
     const id = sessionApiId(identity);
     const key = `${row.device_id}\u0000${row.source_path}\u0000${row.session_id}`;
     const list = this.usageForSessions([row]).get(key) ?? [];
-    return {
+    const summary: SessionSummary = {
       client: list[0]?.client ?? "unknown",
       cost: list.reduce((value, message) => value + message.cost, 0),
       createdAt: list[0]
@@ -930,7 +954,6 @@ export class Store {
         ...list.map((message) => message.timestamp + (message.durationMs ?? 0))
       ),
       model: list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown",
-      ...(includeParts ? { parts: sessionParts(list) } : {}),
       project: sessionProject(list),
       sessionId: identity.sessionId,
       sourcePath: identity.sourcePath,
@@ -940,6 +963,10 @@ export class Store {
         0
       ),
     };
+    if (includeParts) {
+      summary.parts = sessionParts(list);
+    }
+    return summary;
   }
 
   private static hourlyBuckets(

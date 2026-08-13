@@ -28,20 +28,22 @@ export function inferProvider(model: string): string | undefined {
 
 export function canonicalProvider(provider: string): string {
   const id = provider.trim().toLowerCase();
-  const aliases: Record<string, string> = {
+  const aliases = {
     "azure-openai": "azure",
     copilot: "github-copilot",
     github: "github-copilot",
     "google-generative-ai": "google",
     "google-vertex": "google",
-  };
-  return aliases[id] ?? id;
+  } as const;
+  return Object.entries(aliases).find(([alias]) => alias === id)?.[1] ?? id;
 }
 
-export function normalizeWorkspace(raw?: string): {
+interface NormalizedWorkspace {
   key?: string;
   label?: string;
-} {
+}
+
+export function normalizeWorkspace(raw?: string): NormalizedWorkspace {
   if (!raw?.trim()) {
     return {};
   }

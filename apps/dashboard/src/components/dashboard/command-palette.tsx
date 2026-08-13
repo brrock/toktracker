@@ -20,6 +20,7 @@ import {
 import { apiFetch } from "@/lib/api";
 import { compact, recentDate } from "@/lib/dashboard";
 import { NAV_ITEMS, pathWithFilters } from "@/lib/navigation";
+import { sessionSummaryListSchema } from "@/lib/schemas";
 
 import { AgentLogo } from "./primitives";
 
@@ -73,7 +74,9 @@ export const CommandPalette = ({
         if (!response.ok) {
           throw new Error("Session search request failed");
         }
-        setSessionResults((await response.json()) as SessionSummary[]);
+        setSessionResults(
+          sessionSummaryListSchema.parse(await response.json())
+        );
       } catch {
         if (!controller.signal.aborted) {
           setSessionResults([]);

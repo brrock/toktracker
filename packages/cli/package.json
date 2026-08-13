@@ -8,5 +8,8 @@
   },
   "scripts": {
     "typecheck": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "4.3.5"
   }
 }

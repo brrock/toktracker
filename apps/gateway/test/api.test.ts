@@ -1,6 +1,6 @@
 /* eslint-disable vitest/prefer-importing-vitest-globals */
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
@@ -109,6 +109,49 @@ describe("gateway API", () => {
     const response = await app.request("/api/v1/summary");
 
     expect(response.status).toBe(200);
+  });
+
+  test("adds restrictive browser security headers", async () => {
+    const store = await testStore();
+    const app = createApp(store, undefined, false);
+
+    const response = await app.request("/api/health");
+
+    expect(response.headers.get("content-security-policy")).toContain(
+      "default-src 'self'"
+    );
+    expect(response.headers.get("permissions-policy")).toContain("camera=()");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("x-frame-options")).toBe("DENY");
+  });
+
+  test("does not serve files outside the dashboard directory", async () => {
+    const store = await testStore();
+    const dashboardDirectory = path.join(
+      resources.at(-1)?.directory ?? "",
+      "dashboard"
+    );
+    await mkdir(dashboardDirectory);
+    await writeFile(path.join(dashboardDirectory, "index.html"), "dashboard");
+    await writeFile(
+      path.join(path.dirname(dashboardDirectory), "secret.txt"),
+      "secret"
+    );
+    const previousDashboardDirectory = process.env.TOKTRACKER_DASHBOARD_DIR;
+    process.env.TOKTRACKER_DASHBOARD_DIR = dashboardDirectory;
+    try {
+      const app = createApp(store, undefined, false);
+      const response = await app.request("/../secret.txt");
+
+      expect(response.status).toBe(200);
+      expect(await response.text()).toBe("dashboard");
+    } finally {
+      if (previousDashboardDirectory === undefined) {
+        delete process.env.TOKTRACKER_DASHBOARD_DIR;
+      } else {
+        process.env.TOKTRACKER_DASHBOARD_DIR = previousDashboardDirectory;
+      }
+    }
   });
 
   test("pairs a dashboard once, rotates refresh tokens, and revokes devices", async () => {
@@ -275,11 +318,13 @@ describe("gateway API", () => {
       "/api/v1/sessions/search?limit=all",
       { headers }
     );
+    // SAFETY: test and demo fixtures are constructed with the asserted application contract.
     const first = (await firstResponse.json()) as unknown[];
     const secondResponse = await app.request(
       "/api/v1/sessions/search?limit=200&offset=200",
       { headers }
     );
+    // SAFETY: test and demo fixtures are constructed with the asserted application contract.
     const second = (await secondResponse.json()) as unknown[];
     expect(first).toHaveLength(20);
     expect(second).toHaveLength(10);

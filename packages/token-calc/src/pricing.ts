@@ -1,4 +1,9 @@
-import type { TokenBreakdown, UsageMessage } from "@toktracker/shared";
+import type {
+  JsonValue,
+  TokenBreakdown,
+  UsageMessage,
+} from "@toktracker/shared";
+import { z } from "zod";
 
 export interface ModelPrice {
   input: number;
@@ -20,17 +25,27 @@ export interface ModelPrice {
 }
 export type PriceCatalog = Record<string, ModelPrice>;
 
-interface ModelsDevCost {
-  input?: unknown;
-  output?: unknown;
-  cache_read?: unknown;
-  cache_write?: unknown;
-}
-
-const finitePrice = (value: unknown): number | undefined =>
-  typeof value === "number" && Number.isFinite(value) && value >= 0
-    ? value
-    : undefined;
+const finitePriceSchema = z.number().finite().nonnegative();
+const modelsDevCostSchema = z.object({
+  cache_read: finitePriceSchema.optional(),
+  cache_write: finitePriceSchema.optional(),
+  input: finitePriceSchema,
+  output: finitePriceSchema,
+});
+const modelsDevCatalogSchema = z.record(
+  z.string(),
+  z.object({
+    models: z.record(
+      z.string(),
+      z.object({
+        cost: modelsDevCostSchema.optional(),
+        id: z.string().optional(),
+      })
+    ),
+  })
+);
+const liteLlmModelSchema = z.record(z.string(), finitePriceSchema);
+const liteLlmCatalogSchema = z.record(z.string(), liteLlmModelSchema);
 
 const tieredCost = (
   tokens: number,
@@ -133,62 +148,44 @@ export const calculateCost = (
   return (inputCost + outputCost + cacheReadCost + cacheWriteCost) / 1_000_000;
 };
 
-export const parseModelsDevCatalog = (value: unknown): PriceCatalog => {
-  if (!value || typeof value !== "object") {
-    return {};
+export const parseModelsDevCatalog = (value: JsonValue) => {
+  const parsed = modelsDevCatalogSchema.safeParse(value);
+  if (!parsed.success) {
+    return {} satisfies PriceCatalog;
   }
   const catalog: PriceCatalog = {};
-  for (const [providerId, providerValue] of Object.entries(value)) {
-    if (!providerValue || typeof providerValue !== "object") {
-      continue;
-    }
-    const models = Reflect.get(providerValue, "models");
-    if (!models || typeof models !== "object") {
-      continue;
-    }
-    for (const [modelKey, modelValue] of Object.entries(models)) {
-      if (!modelValue || typeof modelValue !== "object") {
+  for (const [providerId, providerValue] of Object.entries(parsed.data)) {
+    for (const [modelKey, modelValue] of Object.entries(providerValue.models)) {
+      const { cost } = modelValue;
+      if (!cost) {
         continue;
       }
-      const cost = Reflect.get(modelValue, "cost") as ModelsDevCost | undefined;
-      const input = finitePrice(cost?.input);
-      const output = finitePrice(cost?.output);
-      if (input === undefined || output === undefined) {
-        continue;
-      }
-      const declaredId = Reflect.get(modelValue, "id");
-      const modelId = typeof declaredId === "string" ? declaredId : modelKey;
+      const modelId = modelValue.id ?? modelKey;
       catalog[`${providerId}/${modelId}`.toLowerCase()] = {
-        cacheRead: finitePrice(cost?.cache_read),
-        cacheWrite: finitePrice(cost?.cache_write),
-        input,
-        output,
+        cacheRead: cost.cache_read,
+        cacheWrite: cost.cache_write,
+        input: cost.input,
+        output: cost.output,
       };
     }
   }
   return catalog;
 };
 
-export const parseLiteLlmCatalog = (value: unknown): PriceCatalog => {
-  if (!value || typeof value !== "object") {
-    return {};
+export const parseLiteLlmCatalog = (value: JsonValue) => {
+  const parsed = liteLlmCatalogSchema.safeParse(value);
+  if (!parsed.success) {
+    return {} satisfies PriceCatalog;
   }
   const catalog: PriceCatalog = {};
-  for (const [modelId, modelValue] of Object.entries(value)) {
-    if (!modelValue || typeof modelValue !== "object") {
-      continue;
-    }
-    const inputPerToken = finitePrice(
-      Reflect.get(modelValue, "input_cost_per_token")
-    );
-    const outputPerToken = finitePrice(
-      Reflect.get(modelValue, "output_cost_per_token")
-    );
+  for (const [modelId, modelValue] of Object.entries(parsed.data)) {
+    const inputPerToken = modelValue.input_cost_per_token;
+    const outputPerToken = modelValue.output_cost_per_token;
     if (inputPerToken === undefined || outputPerToken === undefined) {
       continue;
     }
     const perMillion = (field: string): number | undefined => {
-      const fieldValue = finitePrice(Reflect.get(modelValue, field));
+      const fieldValue = modelValue[field];
       return fieldValue === undefined ? undefined : fieldValue * 1_000_000;
     };
     catalog[modelId.toLowerCase()] = {
@@ -226,11 +223,12 @@ export const findModelPrice = (
   const rawModel = modelId.toLowerCase();
   const model = rawModel.replace(/-\d{8}$/u, "");
   const modelProvider = model.includes("/") ? model.split("/")[0] : undefined;
-  const providerAliases: Record<string, string> = { "openai-codex": "openai" };
+  const providerAliases = { "openai-codex": "openai" } as const;
   const provider =
     modelProvider ??
-    providerAliases[providerId.toLowerCase()] ??
-    providerId.toLowerCase();
+    (providerId.toLowerCase() === "openai-codex"
+      ? providerAliases["openai-codex"]
+      : providerId.toLowerCase());
   const barePrice = catalog[model];
   const providerPrice = catalog[`${provider}/${model}`];
   const usesOpenAiTiers =

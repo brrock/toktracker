@@ -17,7 +17,8 @@ interface ThemeProviderState {
 }
 
 const COLOR_SCHEME_QUERY = "(prefers-color-scheme: dark)";
-const THEME_VALUES: ReadonlySet<Theme> = new Set(["dark", "light", "system"]);
+const isThemeValue = (value: string): value is Theme =>
+  value === "dark" || value === "light" || value === "system";
 
 const ThemeProviderContext = React.createContext<
   ThemeProviderState | undefined
@@ -28,7 +29,7 @@ function isTheme(value: string | null): value is Theme {
     return false;
   }
 
-  return THEME_VALUES.has(value as Theme);
+  return isThemeValue(value);
 }
 
 function getSystemTheme(): ResolvedTheme {

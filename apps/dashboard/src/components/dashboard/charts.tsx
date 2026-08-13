@@ -11,6 +11,7 @@ import {
   EMPTY_HOURLY,
   money,
 } from "@/lib/dashboard";
+import { chartMetricSchema } from "@/lib/schemas";
 
 import { BreakdownIcon, Card, EmptyState } from "./primitives";
 
@@ -65,7 +66,7 @@ export const DailySpendChart = ({
           aria-label="Chart metric"
           value={metric}
           onChange={(event) =>
-            setMetric(event.target.value as "tokens" | "cost")
+            setMetric(chartMetricSchema.parse(event.target.value))
           }
           className="h-8 rounded-md border bg-background px-2 text-xs font-medium"
         >
@@ -144,7 +145,7 @@ export const UsageBreakdownChart = ({
           value={metric}
           aria-label={`${title} metric`}
           onChange={(event) =>
-            setMetric(event.target.value as "tokens" | "cost")
+            setMetric(chartMetricSchema.parse(event.target.value))
           }
           className="h-8 rounded-md border bg-background px-2 text-xs"
         >

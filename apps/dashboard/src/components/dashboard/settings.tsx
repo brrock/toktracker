@@ -15,6 +15,11 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { apiFetch } from "@/lib/api";
 import { recentDate } from "@/lib/dashboard";
+import {
+  clientAutoUpdateSettingsSchema,
+  dashboardDeviceListSchema,
+  dashboardSummarySchema,
+} from "@/lib/schemas";
 
 export type SettingsSection = "general" | "devices" | "export";
 interface DashboardDevice {
@@ -238,7 +243,7 @@ export const SettingsPage = ({
         const response = await apiFetch("/api/v1/settings/client-auto-update");
         setClientAutoUpdate(
           response.ok
-            ? ((await response.json()) as ClientAutoUpdateSettings)
+            ? clientAutoUpdateSettingsSchema.parse(await response.json())
             : undefined
         );
       } catch {
@@ -255,7 +260,9 @@ export const SettingsPage = ({
       try {
         const response = await apiFetch("/api/v1/dashboard-devices");
         setDashboardDevices(
-          response.ok ? ((await response.json()) as DashboardDevice[]) : []
+          response.ok
+            ? dashboardDeviceListSchema.parse(await response.json())
+            : []
         );
       } catch {
         setDashboardDevices([]);
@@ -274,7 +281,7 @@ export const SettingsPage = ({
     if (!response.ok) {
       return;
     }
-    const summary = (await response.json()) as DashboardSummary;
+    const summary = dashboardSummarySchema.parse(await response.json());
     const daily = summary.daily.filter(
       (point) => point.date >= from && point.date <= to
     );
@@ -324,7 +331,7 @@ export const SettingsPage = ({
       });
       if (response.ok) {
         setClientAutoUpdate(
-          (await response.json()) as ClientAutoUpdateSettings
+          clientAutoUpdateSettingsSchema.parse(await response.json())
         );
       }
     } finally {
@@ -429,7 +436,11 @@ export const SettingsPage = ({
                     onChange={(event) =>
                       setClientAutoUpdate({
                         ...clientAutoUpdate,
-                        channel: event.target.value as "nightly" | "stable",
+                        channel: clientAutoUpdateSettingsSchema
+                          .pick({
+                            channel: true,
+                          })
+                          .parse({ channel: event.target.value }).channel,
                       })
                     }
                   >

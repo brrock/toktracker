@@ -1,5 +1,6 @@
 /* eslint-disable node/callback-return -- Hono next() is a promise continuation, not a Node callback. */
 import { timingSafeEqual } from "node:crypto";
+import path from "node:path";
 
 import {
   decryptPayload,
@@ -10,6 +11,8 @@ import type { TimeRange } from "@toktracker/shared";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
+import { secureHeaders } from "hono/secure-headers";
+import { z } from "zod";
 
 import type {
   ClientAutoUpdateSettings,
@@ -17,7 +20,6 @@ import type {
   Store,
 } from "./store";
 
-const TIME_RANGES = new Set<TimeRange>(["day", "week", "month", "year", "all"]);
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
 const MAX_PAIRING_BODY_BYTES = 4096;
 const MAX_FILTER_VALUES = 100;
@@ -33,6 +35,18 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
 ]);
+const jsonValueSchema = z.json();
+const pairingRequestSchema = z.object({
+  code: z.string().max(64),
+  deviceName: z.string().trim().min(1).max(128),
+});
+const clientAutoUpdateSettingsSchema = z.object({
+  channel: z.enum(["stable", "nightly"]),
+  enabled: z.boolean(),
+  windowEndHour: z.number().int().min(0).max(23),
+  windowStartHour: z.number().int().min(0).max(23),
+});
+const timeRangeSchema = z.enum(["day", "week", "month", "year", "all"]);
 
 const validAccessKey = (
   expectedKey: string | undefined,
@@ -106,6 +120,28 @@ export const createApp = (
   dashboardAuthRequired = true
 ): Hono => {
   const app = new Hono();
+  app.use(
+    "*",
+    secureHeaders({
+      contentSecurityPolicy: {
+        baseUri: ["'self'"],
+        connectSrc: ["'self'"],
+        defaultSrc: ["'self'"],
+        fontSrc: ["'self'"],
+        frameAncestors: ["'none'"],
+        imgSrc: ["'self'", "data:"],
+        objectSrc: ["'none'"],
+        scriptSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+      },
+      permissionsPolicy: {
+        camera: [],
+        geolocation: [],
+        microphone: [],
+      },
+      xFrameOptions: "DENY",
+    })
+  );
   const allowedOrigin = process.env.TOKTRACKER_CORS_ORIGIN;
   if (allowedOrigin) {
     app.use("/api/*", cors({ origin: allowedOrigin }));
@@ -151,28 +187,15 @@ export const createApp = (
     ) {
       return context.json({ error: "Pairing request is too large" }, 413);
     }
-    let body: unknown = null;
+    let request: z.infer<typeof pairingRequestSchema>;
     try {
-      body = JSON.parse(submittedText) as unknown;
+      request = pairingRequestSchema.parse(JSON.parse(submittedText));
     } catch {
-      return context.json({ error: "Invalid pairing request" }, 400);
-    }
-    if (!body || typeof body !== "object") {
-      return context.json({ error: "Invalid pairing request" }, 400);
-    }
-    const request = body as { code?: unknown; deviceName?: unknown };
-    if (
-      typeof request.code !== "string" ||
-      request.code.length > 64 ||
-      typeof request.deviceName !== "string" ||
-      request.deviceName.trim().length === 0 ||
-      request.deviceName.length > 128
-    ) {
       return context.json({ error: "Invalid pairing request" }, 400);
     }
     const credentials = store.pairDashboardDevice(
       request.code,
-      request.deviceName.trim()
+      request.deviceName
     );
     if (!credentials) {
       return context.json({ error: "Pairing code is invalid or expired" }, 401);
@@ -214,36 +237,20 @@ export const createApp = (
     context.json(store.clientAutoUpdateSettings())
   );
   app.put("/api/v1/settings/client-auto-update", async (context) => {
-    let body: unknown;
+    let settings: ClientAutoUpdateSettings;
     try {
-      body = await context.req.json();
+      settings = clientAutoUpdateSettingsSchema.parse(await context.req.json());
     } catch {
       return context.json({ error: "Invalid update settings" }, 400);
     }
-    if (!body || typeof body !== "object" || Array.isArray(body)) {
-      return context.json({ error: "Invalid update settings" }, 400);
-    }
-    const settings = body as Partial<ClientAutoUpdateSettings>;
-    const { windowEndHour, windowStartHour } = settings;
     if (
-      typeof settings.enabled !== "boolean" ||
-      (settings.channel !== "stable" && settings.channel !== "nightly") ||
-      typeof windowStartHour !== "number" ||
-      !UPDATE_HOURS.has(windowStartHour) ||
-      typeof windowEndHour !== "number" ||
-      !UPDATE_HOURS.has(windowEndHour) ||
-      windowStartHour === windowEndHour
+      !UPDATE_HOURS.has(settings.windowStartHour) ||
+      !UPDATE_HOURS.has(settings.windowEndHour) ||
+      settings.windowStartHour === settings.windowEndHour
     ) {
       return context.json({ error: "Invalid update settings" }, 400);
     }
-    return context.json(
-      store.setClientAutoUpdateSettings({
-        channel: settings.channel,
-        enabled: settings.enabled,
-        windowEndHour,
-        windowStartHour,
-      })
-    );
+    return context.json(store.setClientAutoUpdateSettings(settings));
   });
   app.post("/api/v1/ingest", async (context) => {
     const contentLength = Number(context.req.header("content-length") ?? 0);
@@ -254,9 +261,9 @@ export const createApp = (
     if (new TextEncoder().encode(submittedText).byteLength > MAX_BODY_BYTES) {
       return context.json({ error: "Ingestion payload is too large" }, 413);
     }
-    let submittedBody: unknown = null;
+    let submittedBody: z.infer<typeof jsonValueSchema>;
     try {
-      submittedBody = JSON.parse(submittedText) as unknown;
+      submittedBody = jsonValueSchema.parse(JSON.parse(submittedText));
     } catch {
       return context.json({ error: "Invalid JSON payload" }, 400);
     }
@@ -341,11 +348,12 @@ export const createApp = (
   });
   app.get("/api/v1/summary", (context) => {
     const devices = queryList(context.req.query("devices"));
-    const requestedRange = context.req.query("range") as TimeRange | undefined;
-    const range =
-      requestedRange && TIME_RANGES.has(requestedRange)
-        ? requestedRange
-        : "month";
+    const requestedRange = timeRangeSchema.safeParse(
+      context.req.query("range")
+    );
+    const range: TimeRange = requestedRange.success
+      ? requestedRange.data
+      : "month";
     const includeAllDevices = context.req.query("includeAllDevices") === "true";
     return context.json(
       store.summary(
@@ -359,16 +367,24 @@ export const createApp = (
     );
   });
 
-  const dashboardDir =
+  const dashboardDir = path.resolve(
     process.env.TOKTRACKER_DASHBOARD_DIR ??
-    new URL("dashboard/", import.meta.url).pathname;
+      new URL("dashboard/", import.meta.url).pathname
+  );
+  const dashboardPathPrefix = `${dashboardDir}${path.sep}`;
+  const dashboardIndex = path.join(dashboardDir, "index.html");
   app.get("*", async (context) => {
-    const requested =
-      context.req.path === "/" ? "index.html" : context.req.path.slice(1);
-    const candidate = Bun.file(`${dashboardDir}/${requested}`);
+    const requestedPath =
+      context.req.path === "/"
+        ? dashboardIndex
+        : path.resolve(dashboardDir, `.${context.req.path}`);
+    const candidatePath = requestedPath.startsWith(dashboardPathPrefix)
+      ? requestedPath
+      : dashboardIndex;
+    const candidate = Bun.file(candidatePath);
     const file = (await candidate.exists())
       ? candidate
-      : Bun.file(`${dashboardDir}/index.html`);
+      : Bun.file(dashboardIndex);
     if (!(await file.exists())) {
       return context.text(
         "Dashboard not built. Run `bun run build:dashboard`.",

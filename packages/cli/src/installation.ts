@@ -10,6 +10,8 @@ import {
 } from "node:fs/promises";
 import path from "node:path";
 
+import { z } from "zod";
+
 import { applicationDirectory, applicationRoot } from "./runtime-config";
 import type { ServiceRole } from "./runtime-config";
 
@@ -25,6 +27,16 @@ export interface ActiveInstallation {
 }
 
 const VERSION_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/u;
+const versionSchema = z.string().regex(VERSION_PATTERN);
+const releaseManifestSchema: z.ZodType<ReleaseManifest> = z.object({
+  repository: z.string(),
+  role: z.enum(["client", "gateway"]),
+  version: versionSchema,
+});
+const activeInstallationSchema: z.ZodType<ActiveInstallation> = z.object({
+  previousVersion: versionSchema.optional(),
+  version: versionSchema,
+});
 
 const assertVersion = (version: string): void => {
   if (!VERSION_PATTERN.test(version)) {
@@ -59,16 +71,11 @@ export const readReleaseManifest = async (
   if (!(await file.exists())) {
     return undefined;
   }
-  const value = (await file.json()) as Partial<ReleaseManifest>;
-  if (
-    (value.role !== "client" && value.role !== "gateway") ||
-    typeof value.repository !== "string" ||
-    typeof value.version !== "string"
-  ) {
+  const value = releaseManifestSchema.safeParse(await file.json());
+  if (!value.success) {
     throw new Error(`Invalid release manifest in ${root}`);
   }
-  assertVersion(value.version);
-  return value as ReleaseManifest;
+  return value.data;
 };
 
 export const readActiveInstallation = async (
@@ -78,15 +85,11 @@ export const readActiveInstallation = async (
   if (!(await file.exists())) {
     return undefined;
   }
-  const value = (await file.json()) as Partial<ActiveInstallation>;
-  if (typeof value.version !== "string") {
+  const value = activeInstallationSchema.safeParse(await file.json());
+  if (!value.success) {
     throw new TypeError(`Invalid active installation metadata for ${role}`);
   }
-  assertVersion(value.version);
-  if (value.previousVersion !== undefined) {
-    assertVersion(value.previousVersion);
-  }
-  return value as ActiveInstallation;
+  return value.data;
 };
 
 const writeActiveInstallation = async (
@@ -281,7 +284,7 @@ export const migrateLegacyGlobalInstallation = async (
   try {
     legacyRoot = await realpath(legacyLink);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+    if (error instanceof Error && "code" in error && error.code === "ENOENT") {
       return undefined;
     }
     throw error;

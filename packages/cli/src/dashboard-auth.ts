@@ -50,15 +50,13 @@ const createCode = (database: Database): void => {
 
 const listDevices = (database: Database): void => {
   const devices = database
-    .query(
+    .query<
+      { createdAt: number; id: string; lastSeen: number; name: string },
+      []
+    >(
       "SELECT id,name,created_at as createdAt,last_seen as lastSeen FROM dashboard_devices ORDER BY last_seen DESC"
     )
-    .all() as {
-    id: string;
-    name: string;
-    createdAt: number;
-    lastSeen: number;
-  }[];
+    .all();
   if (devices.length === 0) {
     console.log("No paired dashboard devices.");
     return;

@@ -7,9 +7,11 @@ import { AgentLogo, Card } from "./primitives";
 
 export const SessionTable = ({
   sessions,
+  showViewAll = true,
   title,
 }: {
   sessions: DashboardSummary["recentSessions"];
+  showViewAll?: boolean;
   title: string;
 }) => (
   <Card>
@@ -18,9 +20,11 @@ export const SessionTable = ({
         <h3 className="font-semibold">{title}</h3>
         <p className="text-sm text-muted-foreground">Latest tracked activity</p>
       </div>
-      <Link to="/sessions" className="text-sm font-medium text-primary">
-        View all
-      </Link>
+      {showViewAll && (
+        <Link to="/sessions" className="text-sm font-medium text-primary">
+          View all
+        </Link>
+      )}
     </div>
     <div className="overflow-x-auto">
       <table className="w-full text-left text-sm">

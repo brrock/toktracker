@@ -2,6 +2,8 @@
 // Version files are intentionally updated sequentially for deterministic output.
 import path from "node:path";
 
+import { z } from "zod";
+
 const [releaseTag] = process.argv.slice(2);
 if (!releaseTag) {
   throw new Error("Usage: bun scripts/set-version.ts <release-tag>");
@@ -17,10 +19,9 @@ for await (const packageFile of glob.scan({ absolute: true, cwd: root })) {
   packageFiles.push(packageFile);
 }
 for (const packageFile of packageFiles) {
-  const packageJson = (await Bun.file(packageFile).json()) as Record<
-    string,
-    unknown
-  >;
+  const packageJson = z
+    .record(z.string(), z.json())
+    .parse(await Bun.file(packageFile).json());
   packageJson.version = version;
   await Bun.write(packageFile, `${JSON.stringify(packageJson, null, 2)}\n`);
 }

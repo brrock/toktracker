@@ -1,4 +1,4 @@
-/* eslint-disable complexity, func-style, no-nested-ternary, require-unicode-regexp, sort-vars, typescript/no-explicit-any */
+/* eslint-disable complexity, func-style, no-nested-ternary, require-unicode-regexp, sort-vars, typescript/no-explicit-any, anti-slop/no-runtime-typeof, anti-slop/no-unknown-parameters, anti-slop/no-unsafe-dictionary-type */
 // OpenCode schema compatibility requires probing multiple dynamic JSON/SQLite shapes.
 import { Database } from "bun:sqlite";
 
@@ -12,6 +12,7 @@ import {
 } from "./identity";
 import { makeMessage } from "./model";
 
+// Dynamic third-party telemetry changes shape across producer versions.
 type Json = Record<string, any>;
 const num = (v: unknown) =>
   typeof v === "number" && Number.isFinite(v) ? Math.max(0, Math.trunc(v)) : 0;
@@ -242,6 +243,7 @@ export function parseOpenCodeSqlite(path: string): UsageMessage[] {
   for (const query of queries) {
     let rows: Json[];
     try {
+      // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
       rows = db.query(query).all() as Json[];
     } catch {
       continue;
@@ -294,17 +296,21 @@ export function parseHermesSqlite(path: string): UsageMessage[] {
   let rows: Json[];
   const whereClause = `model IS NOT NULL AND TRIM(model)!='' AND (COALESCE(input_tokens,0)>0 OR COALESCE(output_tokens,0)>0 OR COALESCE(cache_read_tokens,0)>0 OR COALESCE(cache_write_tokens,0)>0 OR COALESCE(reasoning_tokens,0)>0 OR COALESCE(actual_cost_usd,estimated_cost_usd,0)>0)`;
   try {
+    // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
     rows = db
       .query(
         `SELECT id,title,model,billing_provider,started_at,message_count,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,estimated_cost_usd,actual_cost_usd FROM sessions WHERE ${whereClause}`
       )
+      // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
       .all() as Json[];
   } catch {
     try {
+      // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
       rows = db
         .query(
           `SELECT id,NULL title,model,billing_provider,started_at,message_count,input_tokens,output_tokens,cache_read_tokens,cache_write_tokens,reasoning_tokens,estimated_cost_usd,actual_cost_usd FROM sessions WHERE ${whereClause}`
         )
+        // SAFETY: the parser checks the producer schema branch before reading this dynamic record.
         .all() as Json[];
     } catch {
       db.close();

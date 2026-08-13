@@ -1,8 +1,4 @@
-import type {
-  DashboardSummary,
-  SessionSort,
-  TimeRange,
-} from "@toktracker/shared";
+import type { SessionSort, TimeRange } from "@toktracker/shared";
 import { ArrowLeft, Search, Settings, Zap } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
@@ -24,8 +20,9 @@ import {
   SettingsPage,
 } from "@/components/dashboard/settings";
 import { AUTH_REQUIRED_EVENT, apiFetch } from "@/lib/api";
-import { EMPTY_SUMMARY, RANGE_OPTIONS } from "@/lib/dashboard";
+import { EMPTY_SUMMARY } from "@/lib/dashboard";
 import { Link, NAV_ITEMS } from "@/lib/navigation";
+import { dashboardSummarySchema, timeRangeSchema } from "@/lib/schemas";
 import { AgentPage, AgentsPage } from "@/pages/agents-page";
 import { ModelPage } from "@/pages/model-page";
 import { OverviewPage } from "@/pages/overview-page";
@@ -55,9 +52,8 @@ const App = () => {
     settingsSection === "devices" ||
     settingsSection === "export";
   const requestedRange = searchParams.get("range");
-  const range = RANGE_OPTIONS.some((option) => option.value === requestedRange)
-    ? (requestedRange as TimeRange)
-    : "month";
+  const parsedRange = timeRangeSchema.safeParse(requestedRange);
+  const range: TimeRange = parsedRange.success ? parsedRange.data : "month";
   const selectedDeviceIds = (searchParams.get("devices") ?? "")
     .split(",")
     .filter(Boolean);
@@ -125,8 +121,12 @@ const App = () => {
           throw new Error("Summary request failed");
         }
         const [overviewSummary, globalSummary] = await Promise.all([
-          overviewResponse.json() as Promise<DashboardSummary>,
-          globalResponse.json() as Promise<DashboardSummary>,
+          overviewResponse
+            .json()
+            .then((body) => dashboardSummarySchema.parse(body)),
+          globalResponse
+            .json()
+            .then((body) => dashboardSummarySchema.parse(body)),
         ]);
         setOverviewData(overviewSummary);
         setData(globalSummary);

@@ -2,6 +2,8 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { platform, tmpdir } from "node:os";
 import path from "node:path";
 
+import { z } from "zod";
+
 import {
   activateVersion,
   ensureLauncher,
@@ -26,23 +28,37 @@ interface GithubRelease {
   tag_name: string;
 }
 
-const releaseHeaders = (): Record<string, string> => ({
-  accept: "application/vnd.github+json",
-  ...(process.env.GITHUB_TOKEN
-    ? { authorization: `Bearer ${process.env.GITHUB_TOKEN}` }
-    : {}),
-  "user-agent": "TokTracker updater",
-  "x-github-api-version": "2022-11-28",
+const releaseAssetSchema = z.object({
+  browser_download_url: z.url(),
+  name: z.string(),
+});
+const githubReleaseSchema: z.ZodType<GithubRelease> = z.object({
+  assets: z.array(releaseAssetSchema),
+  prerelease: z.boolean(),
+  tag_name: z.string(),
 });
 
-const fetchJson = async <Value>(url: string): Promise<Value> => {
+const releaseHeaders = () => {
+  const headers = {
+    accept: "application/vnd.github+json",
+    "user-agent": "TokTracker updater",
+    "x-github-api-version": "2022-11-28",
+  };
+  const token = process.env.GITHUB_TOKEN;
+  return token ? { ...headers, authorization: `Bearer ${token}` } : headers;
+};
+
+const fetchReleaseJson = async <Value>(
+  url: string,
+  schema: z.ZodType<Value>
+): Promise<Value> => {
   const response = await fetch(url, { headers: releaseHeaders() });
   if (!response.ok) {
     throw new Error(
       `GitHub returned HTTP ${response.status}: ${await response.text()}`
     );
   }
-  return (await response.json()) as Value;
+  return schema.parse(await response.json());
 };
 
 const findRelease = async (
@@ -52,14 +68,18 @@ const findRelease = async (
 ): Promise<GithubRelease> => {
   const apiRoot = `https://api.github.com/repos/${repository}/releases`;
   if (requestedVersion) {
-    return fetchJson<GithubRelease>(
-      `${apiRoot}/tags/${encodeURIComponent(requestedVersion)}`
+    return fetchReleaseJson(
+      `${apiRoot}/tags/${encodeURIComponent(requestedVersion)}`,
+      githubReleaseSchema
     );
   }
   if (channel === "stable") {
-    return fetchJson<GithubRelease>(`${apiRoot}/latest`);
+    return fetchReleaseJson(`${apiRoot}/latest`, githubReleaseSchema);
   }
-  const releases = await fetchJson<GithubRelease[]>(`${apiRoot}?per_page=30`);
+  const releases = await fetchReleaseJson(
+    `${apiRoot}?per_page=30`,
+    z.array(githubReleaseSchema)
+  );
   const nightly = releases.find(
     (release) => release.prerelease && release.tag_name.startsWith("nightly-")
   );

@@ -219,6 +219,7 @@ export const createDemoPayloads = (): IngestRequest[] => {
     snapshotsByDevice.set(session.deviceId, snapshots);
   }
   return [...snapshotsByDevice].map(([id, sessions]) => ({
+    // SAFETY: test and demo fixtures are constructed with the asserted application contract.
     device: { id, ...DEVICES[id as keyof typeof DEVICES] },
     sessions,
   }));

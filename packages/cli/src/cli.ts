@@ -67,7 +67,7 @@ const bindAddress = (value: string): string => {
 const isLoopbackAddress = (address: string): boolean =>
   address === "::1" || address.startsWith("127.");
 
-const COMMON_FIELDS: Record<string, ConfigField> = {
+const COMMON_FIELDS = {
   "encryption-key": {
     environmentKey: "TOKTRACKER_API_KEY",
     sensitive: true,
@@ -76,8 +76,8 @@ const COMMON_FIELDS: Record<string, ConfigField> = {
     environmentKey: "TOKTRACKER_UPDATE_CHANNEL",
     validate: channel,
   },
-};
-const CONFIG_FIELDS: Record<ServiceRole, Record<string, ConfigField>> = {
+} satisfies Record<string, ConfigField>;
+const CONFIG_FIELDS = {
   client: {
     ...COMMON_FIELDS,
     "data-dir": { environmentKey: "TOKTRACKER_DATA_DIR" },
@@ -102,7 +102,7 @@ const CONFIG_FIELDS: Record<ServiceRole, Record<string, ConfigField>> = {
     host: { environmentKey: "HOST" },
     port: { environmentKey: "PORT", validate: port },
   },
-};
+} satisfies Record<ServiceRole, Record<string, ConfigField>>;
 
 const usageText = (role: ServiceRole): string => {
   const executable = `toktracker-${role}`;
@@ -137,9 +137,10 @@ const usage = (role: ServiceRole): never => {
 };
 
 const fieldFor = (role: ServiceRole, name: string | undefined): ConfigField => {
-  const field = name ? CONFIG_FIELDS[role][name] : undefined;
+  const fields: Record<string, ConfigField> = CONFIG_FIELDS[role];
+  const field = name ? fields[name] : undefined;
   if (!field) {
-    const names = Object.keys(CONFIG_FIELDS[role]).toSorted().join(", ");
+    const names = Object.keys(fields).toSorted().join(", ");
     throw new Error(`Unknown config field. Available fields: ${names}`);
   }
   return field;
@@ -178,9 +179,10 @@ const runConfigCommand = async (
   const config = await readConfig(role);
   if (action === "list") {
     console.log(`Config: ${configPath(role)}`);
-    for (const [fieldName, field] of Object.entries(
-      CONFIG_FIELDS[role]
-    ).toSorted(([left], [right]) => left.localeCompare(right))) {
+    const fields: Record<string, ConfigField> = CONFIG_FIELDS[role];
+    for (const [fieldName, field] of Object.entries(fields).toSorted(
+      ([left], [right]) => left.localeCompare(right)
+    )) {
       console.log(
         `${fieldName}=${displayValue(config[field.environmentKey], field.sensitive)}`
       );

@@ -329,6 +329,7 @@ describe("Store", () => {
     migrated.close();
 
     const database = new Database(dbPath, { strict: true });
+    // SAFETY: test and demo fixtures are constructed with the asserted application contract.
     const columns = database.query("PRAGMA table_info(sessions)").all() as {
       name: string;
     }[];
@@ -336,6 +337,7 @@ describe("Store", () => {
       false
     );
     expect(
+      // SAFETY: test and demo fixtures are constructed with the asserted application contract.
       database.query("SELECT COUNT(*) count FROM session_usage").get() as {
         count: number;
       }
