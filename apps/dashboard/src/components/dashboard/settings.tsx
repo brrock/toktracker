@@ -7,6 +7,7 @@ import {
   MonitorSmartphone,
   ShieldBan,
   SlidersHorizontal,
+  Sparkles,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
@@ -17,11 +18,12 @@ import { apiFetch } from "@/lib/api";
 import { recentDate } from "@/lib/dashboard";
 import {
   clientAutoUpdateSettingsSchema,
+  cursorDashboardOverviewSchema,
   dashboardDeviceListSchema,
   dashboardSummarySchema,
 } from "@/lib/schemas";
 
-export type SettingsSection = "general" | "devices" | "export";
+export type SettingsSection = "general" | "devices" | "export" | "cursor";
 interface DashboardDevice {
   createdAt: number;
   id: string;
@@ -39,6 +41,30 @@ interface ClientAutoUpdateSettings {
   enabled: boolean;
   windowEndHour: number;
   windowStartHour: number;
+}
+
+interface CursorAccountStatus {
+  id: string;
+  isActive: boolean;
+  label?: string;
+}
+
+interface CursorDeviceOverview {
+  accounts: CursorAccountStatus[];
+  desktopEmail?: string;
+  desktopSignedIn: boolean;
+  deviceId: string;
+  lastError?: string;
+  lastSyncAt?: number;
+  name?: string;
+  syncIntervalMs: number;
+  updatedAt: number;
+}
+
+interface CursorOverview {
+  devices: CursorDeviceOverview[];
+  enabled: boolean;
+  syncIntervalMs: number;
 }
 
 const startOfDay = (date: Date): Date =>
@@ -189,6 +215,7 @@ export const SettingsNavigation = ({
     {(
       [
         { icon: SlidersHorizontal, label: "General", value: "general" },
+        { icon: Sparkles, label: "Cursor", value: "cursor" },
         { icon: MonitorSmartphone, label: "Devices", value: "devices" },
         { icon: Download, label: "Data & export", value: "export" },
       ] as const
@@ -209,6 +236,7 @@ export const SettingsNavigation = ({
   </nav>
 );
 
+/* eslint-disable complexity -- settings sections are independent views in one page */
 export const SettingsPage = ({
   data,
   section,
@@ -226,6 +254,12 @@ export const SettingsPage = ({
   const [clientAutoUpdate, setClientAutoUpdate] =
     useState<ClientAutoUpdateSettings>();
   const [savingClientAutoUpdate, setSavingClientAutoUpdate] = useState(false);
+  const [cursorSettings, setCursorSettings] = useState<CursorOverview>();
+  const [savingCursor, setSavingCursor] = useState(false);
+  const [cursorToken, setCursorToken] = useState("");
+  const [cursorLabel, setCursorLabel] = useState("");
+  const [cursorDeviceId, setCursorDeviceId] = useState("");
+  const [cursorMessage, setCursorMessage] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
     data.devices.map((device) => device.id)
   );
@@ -251,6 +285,33 @@ export const SettingsPage = ({
       }
     };
     void loadClientAutoUpdate();
+  }, [section]);
+  useEffect(() => {
+    if (section !== "cursor") {
+      return;
+    }
+    const loadCursorSettings = async (): Promise<void> => {
+      try {
+        const response = await apiFetch("/api/v1/settings/cursor");
+        if (!response.ok) {
+          setCursorSettings(undefined);
+          return;
+        }
+        const overview = cursorDashboardOverviewSchema.parse(
+          await response.json()
+        );
+        setCursorSettings(overview);
+        setCursorDeviceId((current) => {
+          if (current) {
+            return current;
+          }
+          return overview.devices[0]?.deviceId ?? "";
+        });
+      } catch {
+        setCursorSettings(undefined);
+      }
+    };
+    void loadCursorSettings();
   }, [section]);
   useEffect(() => {
     if (section !== "devices") {
@@ -336,6 +397,56 @@ export const SettingsPage = ({
       }
     } finally {
       setSavingClientAutoUpdate(false);
+    }
+  };
+  const refreshCursorSettings = async (): Promise<void> => {
+    const response = await apiFetch("/api/v1/settings/cursor");
+    if (!response.ok) {
+      return;
+    }
+    const overview = cursorDashboardOverviewSchema.parse(await response.json());
+    setCursorSettings(overview);
+    setCursorDeviceId(
+      (current) => current || overview.devices[0]?.deviceId || ""
+    );
+  };
+  const saveCursorSettings = async (): Promise<void> => {
+    if (!cursorSettings) {
+      return;
+    }
+    setSavingCursor(true);
+    setCursorMessage("");
+    try {
+      const response = await apiFetch("/api/v1/settings/cursor", {
+        body: JSON.stringify({
+          enabled: cursorSettings.enabled,
+          syncIntervalMs: cursorSettings.syncIntervalMs,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PUT",
+      });
+      if (response.ok) {
+        await refreshCursorSettings();
+        setCursorMessage("Saved Cursor sync settings.");
+      }
+    } finally {
+      setSavingCursor(false);
+    }
+  };
+  const queueCursorAction = async (
+    path: string,
+    body: Record<string, string>
+  ): Promise<void> => {
+    setCursorMessage("");
+    const response = await apiFetch(path, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    if (response.ok) {
+      setCursorToken("");
+      setCursorMessage("Queued for the next client scan.");
+      await refreshCursorSettings();
     }
   };
   const revokeDashboardDevice = async (id: string): Promise<void> => {
@@ -496,6 +607,226 @@ export const SettingsPage = ({
               </Button>
             </div>
           )}
+        </div>
+      </section>
+    );
+  }
+  if (section === "cursor") {
+    const selectedDevice =
+      cursorSettings?.devices.find(
+        (device) => device.deviceId === cursorDeviceId
+      ) ?? cursorSettings?.devices[0];
+    return (
+      <section className="max-w-3xl">
+        <h2 className="text-2xl font-semibold tracking-tight">Cursor</h2>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Development mode imports your Cursor desktop login automatically.
+          Change accounts and how often usage is synced here.
+        </p>
+        <div className="mt-8 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Sync interval</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            How often clients refresh Cursor usage CSV from Cursor’s API.
+          </p>
+          {cursorSettings && (
+            <div className="mt-4 space-y-4">
+              <label
+                htmlFor="cursor-sync-minutes"
+                className="grid gap-1 text-sm"
+              >
+                Minutes between syncs
+                <Input
+                  id="cursor-sync-minutes"
+                  min="1"
+                  max="1440"
+                  type="number"
+                  value={Math.round(cursorSettings.syncIntervalMs / 60_000)}
+                  onChange={(event) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      syncIntervalMs:
+                        Math.max(1, Number(event.target.value)) * 60_000,
+                    })
+                  }
+                />
+              </label>
+              <Button
+                disabled={savingCursor}
+                size="sm"
+                onClick={saveCursorSettings}
+              >
+                {savingCursor ? "Saving…" : "Save sync interval"}
+              </Button>
+            </div>
+          )}
+        </div>
+        <div className="mt-6 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Auth status</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Status reported by each client after it scans Cursor desktop auth.
+          </p>
+          {!cursorSettings?.devices.length && (
+            <p className="mt-4 text-sm text-muted-foreground">
+              Waiting for a client. Keep `bun run dev` running so this machine’s
+              Cursor login is imported and reported here.
+            </p>
+          )}
+          {cursorSettings?.devices.map((device) => (
+            <div key={device.deviceId} className="mt-4 rounded-md border p-3">
+              <p className="text-sm font-medium">
+                {device.name ?? device.deviceId}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Desktop auth:{" "}
+                {device.desktopSignedIn
+                  ? (device.desktopEmail ?? "signed in")
+                  : "not found"}
+                {device.lastSyncAt
+                  ? ` · Last usage sync ${recentDate(device.lastSyncAt)}`
+                  : ""}
+              </p>
+              {device.lastError && (
+                <p className="mt-1 text-xs text-destructive">
+                  {device.lastError}
+                </p>
+              )}
+              <ul className="mt-3 space-y-2">
+                {device.accounts.map((account) => (
+                  <li
+                    key={account.id}
+                    className="flex items-center justify-between gap-3 text-sm"
+                  >
+                    <span>
+                      {account.isActive ? "* " : ""}
+                      {account.label ?? account.id}
+                    </span>
+                    <span className="flex gap-2">
+                      {!account.isActive && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onClick={() =>
+                            queueCursorAction(
+                              "/api/v1/settings/cursor/accounts/switch",
+                              {
+                                accountId: account.id,
+                                deviceId: device.deviceId,
+                              }
+                            )
+                          }
+                        >
+                          Make active
+                        </Button>
+                      )}
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() =>
+                          queueCursorAction(
+                            "/api/v1/settings/cursor/accounts/remove",
+                            {
+                              accountId: account.id,
+                              deviceId: device.deviceId,
+                            }
+                          )
+                        }
+                      >
+                        Remove
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <div className="mt-6 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Add account</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Import the desktop session again, or paste a
+            WorkosCursorSessionToken value.
+          </p>
+          <div className="mt-4 grid gap-3">
+            <label htmlFor="cursor-device" className="grid gap-1 text-sm">
+              Client device
+              <select
+                id="cursor-device"
+                value={selectedDevice?.deviceId ?? cursorDeviceId}
+                className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
+                onChange={(event) => setCursorDeviceId(event.target.value)}
+              >
+                {(cursorSettings?.devices.length
+                  ? cursorSettings.devices.map((device) => ({
+                      id: device.deviceId,
+                      name: device.name ?? device.deviceId,
+                    }))
+                  : data.devices.map((device) => ({
+                      id: device.id,
+                      name: device.name,
+                    }))
+                ).map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label
+              htmlFor="cursor-account-label"
+              className="grid gap-1 text-sm"
+            >
+              Label
+              <Input
+                id="cursor-account-label"
+                value={cursorLabel}
+                onChange={(event) => setCursorLabel(event.target.value)}
+              />
+            </label>
+            <label
+              htmlFor="cursor-account-token"
+              className="grid gap-1 text-sm"
+            >
+              Session token
+              <Input
+                id="cursor-account-token"
+                type="password"
+                value={cursorToken}
+                onChange={(event) => setCursorToken(event.target.value)}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                disabled={
+                  !cursorToken || !(selectedDevice?.deviceId ?? cursorDeviceId)
+                }
+                onClick={() =>
+                  queueCursorAction("/api/v1/settings/cursor/accounts", {
+                    deviceId: selectedDevice?.deviceId ?? cursorDeviceId,
+                    label: cursorLabel,
+                    token: cursorToken,
+                  })
+                }
+              >
+                Add account
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!(selectedDevice?.deviceId ?? cursorDeviceId)}
+                onClick={() =>
+                  queueCursorAction("/api/v1/settings/cursor/import-desktop", {
+                    deviceId: selectedDevice?.deviceId ?? cursorDeviceId,
+                  })
+                }
+              >
+                Import desktop login
+              </Button>
+            </div>
+            {cursorMessage && (
+              <p className="text-sm text-muted-foreground">{cursorMessage}</p>
+            )}
+          </div>
         </div>
       </section>
     );

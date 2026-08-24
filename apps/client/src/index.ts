@@ -16,22 +16,30 @@ import type {
 import type { PriceCatalog } from "@toktracker/token-calc";
 import {
   applyEstimatedPricing,
+  clampCursorSyncIntervalMs,
+  DEFAULT_CURSOR_SYNC_INTERVAL_MS,
+  importDesktopCursorAccounts,
+  listCursorAccounts,
+  listCursorUsageCsvFiles,
   parseClaude,
   parseCodex,
   parseCopilotDesktopSqlite,
   parseCopilotOtel,
   parseCopilotVsCode,
+  parseCursorCsv,
   parseHermesSqlite,
   parseLiteLlmCatalog,
+  parseModelsDevCatalog,
+  parseOpenClaw,
   parseOpenCodeJson,
   parseOpenCodeSqlite,
   parsePi,
-  parseCursorCsv,
-  parseOpenClaw,
-  parseModelsDevCatalog,
+  readDesktopCursorSessions,
+  removeCursorAccount,
   resolveCursorPaths,
+  setActiveCursorAccount,
   syncCursorUsageCaches,
-  listCursorUsageCsvFiles,
+  upsertCursorAccount,
 } from "@toktracker/token-calc";
 import { z } from "zod";
 
@@ -51,6 +59,14 @@ const MAX_BATCH_MESSAGES = 100_000;
 const MAX_BATCH_SOURCE_UPDATES = 10_000;
 const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+let cursorSyncIntervalMs = clampCursorSyncIntervalMs(
+  Number(
+    process.env.TOKTRACKER_CURSOR_SYNC_INTERVAL_MS ??
+      DEFAULT_CURSOR_SYNC_INTERVAL_MS
+  )
+);
+let cursorLastError: string | undefined;
+let cursorLastSyncAt: number | undefined;
 
 const optionalStringSchema = z.string();
 const historyRowSchema = z.record(z.string(), z.json());
@@ -296,14 +312,34 @@ async function discover(): Promise<Source[]> {
     add({ kind: "copilot-otel", path: process.env.COPILOT_OTEL_EXPORTER_FILE });
   }
   const cursorPaths = resolveCursorPaths(dataDir, home);
+  const existingAccounts = await listCursorAccounts(cursorPaths);
   try {
-    const cursorSync = await syncCursorUsageCaches(cursorPaths);
-    if (cursorSync.error && !cursorSync.synced) {
+    const cursorSync = await syncCursorUsageCaches(cursorPaths, {
+      freshnessMs: cursorSyncIntervalMs,
+    });
+    const accounts = await listCursorAccounts(cursorPaths);
+    const added = accounts.filter(
+      (account) =>
+        !existingAccounts.some((existing) => existing.id === account.id)
+    );
+    if (added.length > 0) {
+      console.log(
+        `TokTracker: using Cursor desktop auth (${added
+          .map((account) => account.label ?? account.id)
+          .join(", ")})`
+      );
+    }
+    if (cursorSync.synced) {
+      cursorLastSyncAt = Date.now();
+      cursorLastError = cursorSync.error;
+    } else if (cursorSync.error && !cursorSync.synced) {
+      cursorLastError = cursorSync.error;
       console.warn(
         `TokTracker: Cursor usage sync skipped (${cursorSync.error})`
       );
     }
   } catch (error) {
+    cursorLastError = error instanceof Error ? error.message : String(error);
     console.warn("TokTracker: Cursor usage sync failed", error);
   }
   for (const path of await listCursorUsageCsvFiles(cursorPaths)) {
@@ -813,6 +849,126 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
   }
 };
 
+const cursorDashboardEnabled = (): boolean =>
+  process.env.TOKTRACKER_CURSOR_DASHBOARD !== "0";
+
+const cursorClientPolicySchema = z.object({
+  commands: z.array(
+    z.object({
+      accountId: z.string().optional(),
+      id: z.string(),
+      label: z.string().optional(),
+      token: z.string().optional(),
+      type: z.string(),
+    })
+  ),
+  syncIntervalMs: z.number().finite().positive(),
+});
+
+const gatewayHeaders = (): Headers => {
+  const headers = new Headers();
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  if (accessKey) {
+    headers.set("authorization", `Bearer ${accessKey}`);
+  }
+  return headers;
+};
+
+const applyCursorCommands = async (): Promise<void> => {
+  if (!cursorDashboardEnabled()) {
+    return;
+  }
+  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  warnAboutInsecureGateway(endpoint, accessKey);
+  const cursorPaths = resolveCursorPaths(dataDir, home);
+  try {
+    const policyResponse = await fetch(
+      `${endpoint}/api/v1/client-cursor-policy?deviceId=${encodeURIComponent(deviceId!)}`,
+      {
+        headers: gatewayHeaders(),
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+    if (!policyResponse.ok) {
+      return;
+    }
+    const policy = cursorClientPolicySchema.parse(await policyResponse.json());
+    cursorSyncIntervalMs = clampCursorSyncIntervalMs(policy.syncIntervalMs);
+    const acknowledged: string[] = [];
+    for (const command of policy.commands) {
+      try {
+        if (command.type === "import-desktop") {
+          await importDesktopCursorAccounts(cursorPaths);
+        } else if (command.type === "add-account" && command.token) {
+          await upsertCursorAccount(cursorPaths, command.token, command.label);
+        } else if (command.type === "remove-account" && command.accountId) {
+          await removeCursorAccount(cursorPaths, command.accountId, true);
+        } else if (command.type === "switch-account" && command.accountId) {
+          await setActiveCursorAccount(cursorPaths, command.accountId);
+        }
+        acknowledged.push(command.id);
+      } catch (error) {
+        cursorLastError =
+          error instanceof Error ? error.message : String(error);
+      }
+    }
+    if (acknowledged.length > 0) {
+      await fetch(`${endpoint}/api/v1/client-cursor-commands/ack`, {
+        body: JSON.stringify({
+          commandIds: acknowledged,
+          deviceId,
+        }),
+        headers: (() => {
+          const headers = gatewayHeaders();
+          headers.set("content-type", "application/json");
+          return headers;
+        })(),
+        method: "POST",
+        signal: AbortSignal.timeout(5000),
+      });
+    }
+  } catch (error) {
+    console.warn("TokTracker: Cursor dashboard commands failed", error);
+  }
+};
+
+const reportCursorStatus = async (): Promise<void> => {
+  if (!cursorDashboardEnabled()) {
+    return;
+  }
+  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
+  const cursorPaths = resolveCursorPaths(dataDir, home);
+  try {
+    const desktop = readDesktopCursorSessions(home);
+    const accounts = await listCursorAccounts(cursorPaths);
+    await fetch(`${endpoint}/api/v1/client-cursor-status`, {
+      body: JSON.stringify({
+        accounts: accounts.map((account) => ({
+          id: account.id,
+          isActive: account.isActive,
+          label: account.label,
+        })),
+        desktopEmail: desktop[0]?.email,
+        desktopSignedIn: desktop.length > 0,
+        deviceId,
+        lastError: cursorLastError,
+        lastSyncAt: cursorLastSyncAt,
+        syncIntervalMs: cursorSyncIntervalMs,
+      }),
+      headers: (() => {
+        const headers = gatewayHeaders();
+        headers.set("content-type", "application/json");
+        return headers;
+      })(),
+      method: "POST",
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (error) {
+    console.warn("TokTracker: Cursor dashboard status failed", error);
+  }
+};
+
 const planIsCurrent = async (plan: SyncPlan): Promise<boolean> => {
   for (const scan of plan.scans) {
     try {
@@ -834,7 +990,9 @@ const planIsCurrent = async (plan: SyncPlan): Promise<boolean> => {
 
 async function sync() {
   await applyGatewayUpdatePolicy();
+  await applyCursorCommands();
   const plan = await changedSessions();
+  await reportCursorStatus();
   const mustContactGateway =
     plan.sessions.length > 0 ||
     plan.sourceUpdates.some(

@@ -8,6 +8,7 @@ import {
   isIngestRequest,
 } from "@toktracker/shared";
 import type { TimeRange } from "@toktracker/shared";
+import { clampCursorSyncIntervalMs } from "@toktracker/token-calc";
 import { Hono } from "hono";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
@@ -16,6 +17,8 @@ import { z } from "zod";
 
 import type {
   ClientAutoUpdateSettings,
+  CursorDashboardSettings,
+  CursorDeviceStatus,
   DashboardCredentials,
   Store,
 } from "./store";
@@ -45,6 +48,37 @@ const clientAutoUpdateSettingsSchema = z.object({
   enabled: z.boolean(),
   windowEndHour: z.number().int().min(0).max(23),
   windowStartHour: z.number().int().min(0).max(23),
+});
+const cursorDashboardSettingsSchema = z.object({
+  enabled: z.boolean(),
+  syncIntervalMs: z.number().finite().positive(),
+});
+const cursorDeviceStatusSchema = z.object({
+  accounts: z
+    .array(
+      z.object({
+        id: z.string().trim().min(1).max(128),
+        isActive: z.boolean(),
+        label: z.string().trim().max(128).optional(),
+      })
+    )
+    .max(50),
+  desktopEmail: z.string().trim().max(320).optional(),
+  desktopSignedIn: z.boolean(),
+  deviceId: z.string().trim().min(1).max(128),
+  lastError: z.string().trim().max(1024).optional(),
+  lastSyncAt: z.number().int().safe().nonnegative().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+});
+const cursorCommandAckSchema = z.object({
+  commandIds: z.array(z.string().trim().min(1).max(128)).max(100),
+  deviceId: z.string().trim().min(1).max(128),
+});
+const cursorAccountActionSchema = z.object({
+  accountId: z.string().trim().min(1).max(128).optional(),
+  deviceId: z.string().trim().min(1).max(128),
+  label: z.string().trim().max(128).optional(),
+  token: z.string().trim().min(1).max(8192).optional(),
 });
 const timeRangeSchema = z.enum(["day", "week", "month", "year", "all"]);
 
@@ -161,7 +195,10 @@ export const createApp = (
     const isClientRoute =
       context.req.path === "/api/health" ||
       context.req.path === "/api/v1/ingest" ||
-      context.req.path === "/api/v1/client-update-policy";
+      context.req.path === "/api/v1/client-update-policy" ||
+      context.req.path === "/api/v1/client-cursor-policy" ||
+      context.req.path === "/api/v1/client-cursor-status" ||
+      context.req.path === "/api/v1/client-cursor-commands/ack";
     if (isClientRoute) {
       const encryptedIngestCanAuthenticateItself =
         context.req.path === "/api/v1/ingest";
@@ -251,6 +288,114 @@ export const createApp = (
       return context.json({ error: "Invalid update settings" }, 400);
     }
     return context.json(store.setClientAutoUpdateSettings(settings));
+  });
+  app.get("/api/v1/client-cursor-policy", (context) => {
+    const deviceId = context.req.query("deviceId")?.trim() ?? "";
+    const settings = store.cursorDashboardSettings();
+    return context.json({
+      commands: deviceId ? store.cursorCommandsForDevice(deviceId) : [],
+      enabled: settings.enabled,
+      syncIntervalMs: settings.syncIntervalMs,
+    });
+  });
+  app.post("/api/v1/client-cursor-status", async (context) => {
+    let status: CursorDeviceStatus;
+    try {
+      status = cursorDeviceStatusSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor status" }, 400);
+    }
+    return context.json(store.recordCursorDeviceStatus(status));
+  });
+  app.post("/api/v1/client-cursor-commands/ack", async (context) => {
+    let body: z.infer<typeof cursorCommandAckSchema>;
+    try {
+      body = cursorCommandAckSchema.parse(await context.req.json());
+    } catch {
+      return context.json(
+        { error: "Invalid Cursor command acknowledgement" },
+        400
+      );
+    }
+    return context.json({
+      removed: store.ackCursorCommands(body.deviceId, body.commandIds),
+    });
+  });
+  app.get("/api/v1/settings/cursor", (context) =>
+    context.json(store.cursorDashboardOverview())
+  );
+  app.put("/api/v1/settings/cursor", async (context) => {
+    let settings: CursorDashboardSettings;
+    try {
+      settings = cursorDashboardSettingsSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor settings" }, 400);
+    }
+    return context.json(
+      store.setCursorDashboardSettings({
+        enabled: settings.enabled,
+        syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
+      })
+    );
+  });
+  app.post("/api/v1/settings/cursor/import-desktop", async (context) => {
+    let body: z.infer<typeof cursorAccountActionSchema>;
+    try {
+      body = cursorAccountActionSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor account request" }, 400);
+    }
+    store.enqueueCursorCommand(body.deviceId, { type: "import-desktop" });
+    return context.json({ ok: true });
+  });
+  app.post("/api/v1/settings/cursor/accounts", async (context) => {
+    let body: z.infer<typeof cursorAccountActionSchema>;
+    try {
+      body = cursorAccountActionSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor account request" }, 400);
+    }
+    if (!body.token) {
+      return context.json({ error: "A session token is required" }, 400);
+    }
+    store.enqueueCursorCommand(body.deviceId, {
+      label: body.label,
+      token: body.token,
+      type: "add-account",
+    });
+    return context.json({ ok: true });
+  });
+  app.post("/api/v1/settings/cursor/accounts/remove", async (context) => {
+    let body: z.infer<typeof cursorAccountActionSchema>;
+    try {
+      body = cursorAccountActionSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor account request" }, 400);
+    }
+    if (!body.accountId) {
+      return context.json({ error: "An account id is required" }, 400);
+    }
+    store.enqueueCursorCommand(body.deviceId, {
+      accountId: body.accountId,
+      type: "remove-account",
+    });
+    return context.json({ ok: true });
+  });
+  app.post("/api/v1/settings/cursor/accounts/switch", async (context) => {
+    let body: z.infer<typeof cursorAccountActionSchema>;
+    try {
+      body = cursorAccountActionSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor account request" }, 400);
+    }
+    if (!body.accountId) {
+      return context.json({ error: "An account id is required" }, 400);
+    }
+    store.enqueueCursorCommand(body.deviceId, {
+      accountId: body.accountId,
+      type: "switch-account",
+    });
+    return context.json({ ok: true });
   });
   app.post("/api/v1/ingest", async (context) => {
     const contentLength = Number(context.req.header("content-length") ?? 0);

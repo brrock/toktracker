@@ -160,11 +160,13 @@ bun run dev
 
 Open **http://localhost:5173**. Development mode starts all three pieces:
 
-| Service   | Address               | Purpose                            |
-| --------- | --------------------- | ---------------------------------- |
-| Dashboard | http://localhost:5173 | Vite development UI                |
-| Gateway   | http://localhost:4310 | API and local database             |
-| Client    | —                     | Scans sessions and uploads changes |
+| Service | Address | Purpose |
+| --- | --- | --- |
+| Dashboard | http://localhost:5173 | Vite development UI |
+| Gateway | http://localhost:4310 | API and local database |
+| Client | — | Scans sessions, imports Cursor desktop auth, and uploads changes |
+
+`bun run dev` imports the signed-in Cursor desktop account automatically. Open **Settings → Cursor** to check auth status, add accounts, and change the usage sync interval.
 
 Development data is stored in `.dev-data/` and ignored by Git. Reset it with:
 

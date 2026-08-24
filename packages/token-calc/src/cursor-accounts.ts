@@ -10,8 +10,20 @@ import { isCursorUsageCsvFilename } from "./cursor";
 
 const USAGE_CSV_ENDPOINT =
   "https://cursor.com/api/dashboard/export-usage-events-csv?strategy=tokens";
-const AUTO_SYNC_FRESHNESS_MS = 5 * 60 * 1000;
+export const DEFAULT_CURSOR_SYNC_INTERVAL_MS = 5 * 60 * 1000;
+export const MIN_CURSOR_SYNC_INTERVAL_MS = 60 * 1000;
+export const MAX_CURSOR_SYNC_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const SYNC_ATTEMPT_MARKER = "usage.last-sync-attempt";
+
+export const clampCursorSyncIntervalMs = (value: number): number => {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_CURSOR_SYNC_INTERVAL_MS;
+  }
+  return Math.min(
+    MAX_CURSOR_SYNC_INTERVAL_MS,
+    Math.max(MIN_CURSOR_SYNC_INTERVAL_MS, Math.round(value))
+  );
+};
 
 export interface CursorAccount {
   createdAt: string;
@@ -475,9 +487,13 @@ export const syncCursorUsageCaches = async (
   options?: {
     fetchImpl?: CursorFetch;
     force?: boolean;
+    freshnessMs?: number;
+    importDesktop?: boolean;
   }
 ): Promise<CursorSyncResult> => {
-  await importDesktopCursorAccounts(paths);
+  if (options?.importDesktop !== false) {
+    await importDesktopCursorAccounts(paths);
+  }
   const store = await loadCursorAccountStore(paths);
   if (Object.keys(store.accounts).length === 0) {
     return { error: "Not authenticated", rows: 0, synced: false };
@@ -486,21 +502,24 @@ export const syncCursorUsageCaches = async (
   if (platform() !== "win32") {
     await chmod(paths.cacheDir, 0o700);
   }
+  const freshnessMs = clampCursorSyncIntervalMs(
+    options?.freshnessMs ?? DEFAULT_CURSOR_SYNC_INTERVAL_MS
+  );
   if (!options?.force) {
     const expected = Object.keys(store.accounts).map((id) =>
       cachePathForAccount(paths.cacheDir, id, store.activeAccountId)
     );
     const markerFresh = await fileIsFresh(
       join(paths.cacheDir, SYNC_ATTEMPT_MARKER),
-      AUTO_SYNC_FRESHNESS_MS
+      freshnessMs
     );
     const activePath = join(paths.cacheDir, "usage.csv");
-    const activeFresh = await fileIsFresh(activePath, AUTO_SYNC_FRESHNESS_MS);
+    const activeFresh = await fileIsFresh(activePath, freshnessMs);
     const restFresh = (
       await Promise.all(
         expected
           .filter((path) => path !== activePath)
-          .map(async (path) => fileIsFresh(path, AUTO_SYNC_FRESHNESS_MS))
+          .map(async (path) => fileIsFresh(path, freshnessMs))
       )
     ).every(Boolean);
     if (activeFresh && (restFresh || markerFresh)) {

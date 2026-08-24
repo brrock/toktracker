@@ -109,4 +109,26 @@ export const clientAutoUpdateSettingsSchema = z.object({
   windowEndHour: z.number().int().min(0).max(23),
   windowStartHour: z.number().int().min(0).max(23),
 });
+export const cursorAccountStatusSchema = z.object({
+  id: z.string(),
+  isActive: z.boolean(),
+  label: z.string().optional(),
+});
+export const cursorDashboardOverviewSchema = z.object({
+  devices: z.array(
+    z.object({
+      accounts: z.array(cursorAccountStatusSchema),
+      desktopEmail: z.string().optional(),
+      desktopSignedIn: z.boolean(),
+      deviceId: z.string(),
+      lastError: z.string().optional(),
+      lastSyncAt: z.number().finite().optional(),
+      name: z.string().optional(),
+      syncIntervalMs: z.number().finite(),
+      updatedAt: z.number().finite(),
+    })
+  ),
+  enabled: z.boolean(),
+  syncIntervalMs: z.number().finite(),
+});
 export const errorResponseSchema = z.object({ error: z.string() });

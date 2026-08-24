@@ -50,7 +50,8 @@ const App = () => {
   const settingsOpen =
     settingsSection === "general" ||
     settingsSection === "devices" ||
-    settingsSection === "export";
+    settingsSection === "export" ||
+    settingsSection === "cursor";
   const requestedRange = searchParams.get("range");
   const parsedRange = timeRangeSchema.safeParse(requestedRange);
   const range: TimeRange = parsedRange.success ? parsedRange.data : "month";

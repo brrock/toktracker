@@ -80,6 +80,14 @@ const COMMON_FIELDS = {
 const CONFIG_FIELDS = {
   client: {
     ...COMMON_FIELDS,
+    "cursor-dashboard": {
+      environmentKey: "TOKTRACKER_CURSOR_DASHBOARD",
+      validate: boolean,
+    },
+    "cursor-sync-interval-ms": {
+      environmentKey: "TOKTRACKER_CURSOR_SYNC_INTERVAL_MS",
+      validate: positiveInteger,
+    },
     "data-dir": { environmentKey: "TOKTRACKER_DATA_DIR" },
     "device-name": { environmentKey: "TOKTRACKER_DEVICE_NAME" },
     "gateway-auto-update": {

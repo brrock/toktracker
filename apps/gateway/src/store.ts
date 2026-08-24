@@ -13,6 +13,8 @@ import type {
 } from "@toktracker/shared";
 import {
   canonicalModelId,
+  clampCursorSyncIntervalMs,
+  DEFAULT_CURSOR_SYNC_INTERVAL_MS,
   isHermesMessage,
   summarize,
   totalTokens,
@@ -60,6 +62,48 @@ export interface ClientAutoUpdateSettings {
   windowStartHour: number;
 }
 
+export interface CursorAccountStatus {
+  id: string;
+  isActive: boolean;
+  label?: string;
+}
+
+export interface CursorDeviceStatus {
+  accounts: CursorAccountStatus[];
+  desktopEmail?: string;
+  desktopSignedIn: boolean;
+  deviceId: string;
+  lastError?: string;
+  lastSyncAt?: number;
+  syncIntervalMs: number;
+}
+
+export type CursorDeviceCommand =
+  | { accountId: string; id: string; type: "remove-account" }
+  | { accountId: string; id: string; type: "switch-account" }
+  | { id: string; label?: string; token: string; type: "add-account" }
+  | { id: string; type: "import-desktop" };
+
+export type CursorCommandDraft =
+  | { accountId: string; type: "remove-account" }
+  | { accountId: string; type: "switch-account" }
+  | { label?: string; token: string; type: "add-account" }
+  | { type: "import-desktop" };
+
+export interface CursorDashboardSettings {
+  enabled: boolean;
+  syncIntervalMs: number;
+}
+
+export interface CursorDashboardOverview {
+  devices: (CursorDeviceStatus & {
+    name?: string;
+    updatedAt: number;
+  })[];
+  enabled: boolean;
+  syncIntervalMs: number;
+}
+
 const clientAutoUpdateSettingsSchema: z.ZodType<ClientAutoUpdateSettings> =
   z.object({
     channel: z.enum(["stable", "nightly"]),
@@ -73,6 +117,63 @@ const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
   enabled: false,
   windowEndHour: 4,
   windowStartHour: 2,
+};
+
+const cursorAccountStatusSchema = z.object({
+  id: z.string().trim().min(1).max(128),
+  isActive: z.boolean(),
+  label: z.string().trim().max(128).optional(),
+});
+const cursorDeviceStatusSchema: z.ZodType<
+  Omit<CursorDeviceStatus, "deviceId">
+> = z.object({
+  accounts: z.array(cursorAccountStatusSchema).max(50),
+  desktopEmail: z.string().trim().max(320).optional(),
+  desktopSignedIn: z.boolean(),
+  lastError: z.string().trim().max(1024).optional(),
+  lastSyncAt: z.number().int().safe().nonnegative().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+});
+const storedCursorDeviceStatusSchema: z.ZodType<CursorDeviceStatus> = z.object({
+  accounts: z.array(cursorAccountStatusSchema).max(50),
+  desktopEmail: z.string().trim().max(320).optional(),
+  desktopSignedIn: z.boolean(),
+  deviceId: z.string().trim().min(1).max(128),
+  lastError: z.string().trim().max(1024).optional(),
+  lastSyncAt: z.number().int().safe().nonnegative().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+});
+const cursorDashboardSettingsSchema: z.ZodType<CursorDashboardSettings> =
+  z.object({
+    enabled: z.boolean(),
+    syncIntervalMs: z.number().finite().positive(),
+  });
+const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
+  z.discriminatedUnion("type", [
+    z.object({
+      id: z.string().min(1),
+      type: z.literal("import-desktop"),
+    }),
+    z.object({
+      id: z.string().min(1),
+      label: z.string().max(128).optional(),
+      token: z.string().min(1).max(8192),
+      type: z.literal("add-account"),
+    }),
+    z.object({
+      accountId: z.string().min(1).max(128),
+      id: z.string().min(1),
+      type: z.literal("remove-account"),
+    }),
+    z.object({
+      accountId: z.string().min(1).max(128),
+      id: z.string().min(1),
+      type: z.literal("switch-account"),
+    }),
+  ]);
+const DEFAULT_CURSOR_DASHBOARD_SETTINGS: CursorDashboardSettings = {
+  enabled: true,
+  syncIntervalMs: DEFAULT_CURSOR_SYNC_INTERVAL_MS,
 };
 
 interface StoredSessionRow {
@@ -312,6 +413,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS gateway_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ingestion_requests (device_id TEXT NOT NULL, request_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(device_id,request_id));
       CREATE INDEX IF NOT EXISTS ingestion_requests_received_at ON ingestion_requests(received_at);
+      CREATE TABLE IF NOT EXISTS cursor_device_status (device_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, status TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS cursor_device_commands (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, created_at INTEGER NOT NULL, command TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS cursor_device_commands_device ON cursor_device_commands(device_id);
     `);
     // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const deviceColumns = this.db.query("PRAGMA table_info(devices)").all() as {
@@ -569,6 +673,155 @@ export class Store {
       )
       .run(JSON.stringify(settings));
     return settings;
+  }
+
+  cursorDashboardSettings(): CursorDashboardSettings {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const row = this.db
+      .query("SELECT value FROM gateway_settings WHERE key='cursor_dashboard'")
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .get() as { value: string } | null;
+    if (!row) {
+      return { ...DEFAULT_CURSOR_DASHBOARD_SETTINGS };
+    }
+    try {
+      const parsed = cursorDashboardSettingsSchema.safeParse(
+        JSON.parse(row.value)
+      );
+      if (parsed.success) {
+        return {
+          enabled: parsed.data.enabled,
+          syncIntervalMs: clampCursorSyncIntervalMs(parsed.data.syncIntervalMs),
+        };
+      }
+    } catch {
+      // Invalid persisted settings fall back to the enabled default.
+    }
+    return { ...DEFAULT_CURSOR_DASHBOARD_SETTINGS };
+  }
+
+  setCursorDashboardSettings(
+    settings: CursorDashboardSettings
+  ): CursorDashboardSettings {
+    const next = {
+      enabled: settings.enabled,
+      syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
+    };
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('cursor_dashboard',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(next));
+    return next;
+  }
+
+  recordCursorDeviceStatus(status: CursorDeviceStatus): CursorDeviceStatus {
+    const body = cursorDeviceStatusSchema.parse({
+      accounts: status.accounts,
+      desktopEmail: status.desktopEmail,
+      desktopSignedIn: status.desktopSignedIn,
+      lastError: status.lastError,
+      lastSyncAt: status.lastSyncAt,
+      syncIntervalMs: clampCursorSyncIntervalMs(status.syncIntervalMs),
+    });
+    const stored: CursorDeviceStatus = { ...body, deviceId: status.deviceId };
+    this.db
+      .query(
+        "INSERT INTO cursor_device_status(device_id,updated_at,status) VALUES(?,?,?) ON CONFLICT(device_id) DO UPDATE SET updated_at=excluded.updated_at,status=excluded.status"
+      )
+      .run(status.deviceId, Date.now(), JSON.stringify(stored));
+    return stored;
+  }
+
+  enqueueCursorCommand(
+    deviceId: string,
+    command: CursorCommandDraft
+  ): CursorDeviceCommand {
+    const queued = cursorDeviceCommandSchema.parse({
+      ...command,
+      id: crypto.randomUUID(),
+    });
+    this.db
+      .query(
+        "INSERT INTO cursor_device_commands(id,device_id,created_at,command) VALUES(?,?,?,?)"
+      )
+      .run(queued.id, deviceId, Date.now(), JSON.stringify(queued));
+    return queued;
+  }
+
+  cursorCommandsForDevice(deviceId: string): CursorDeviceCommand[] {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const rows = this.db
+      .query(
+        "SELECT command FROM cursor_device_commands WHERE device_id=? ORDER BY created_at"
+      )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .all(deviceId) as { command: string }[];
+    const commands: CursorDeviceCommand[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = cursorDeviceCommandSchema.safeParse(
+          JSON.parse(row.command)
+        );
+        if (parsed.success) {
+          commands.push(parsed.data);
+        }
+      } catch {
+        // Skip malformed command payloads.
+      }
+    }
+    return commands;
+  }
+
+  ackCursorCommands(deviceId: string, commandIds: string[]): number {
+    let removed = 0;
+    const statement = this.db.query(
+      "DELETE FROM cursor_device_commands WHERE device_id=? AND id=?"
+    );
+    for (const commandId of commandIds) {
+      removed += statement.run(deviceId, commandId).changes;
+    }
+    return removed;
+  }
+
+  cursorDashboardOverview(): CursorDashboardOverview {
+    const settings = this.cursorDashboardSettings();
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const names = new Map(
+      (
+        this.db
+          .query("SELECT id,name FROM devices")
+          // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+          .all() as { id: string; name: string }[]
+      ).map((device) => [device.id, device.name])
+    );
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const rows = this.db
+      .query(
+        "SELECT device_id as deviceId, updated_at as updatedAt, status FROM cursor_device_status ORDER BY updated_at DESC"
+      )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .all() as { deviceId: string; status: string; updatedAt: number }[];
+    const devices: CursorDashboardOverview["devices"] = [];
+    for (const row of rows) {
+      try {
+        const parsed = storedCursorDeviceStatusSchema.safeParse(
+          JSON.parse(row.status)
+        );
+        if (!parsed.success) {
+          continue;
+        }
+        devices.push({
+          ...parsed.data,
+          deviceId: row.deviceId,
+          name: names.get(row.deviceId),
+          updatedAt: row.updatedAt,
+        });
+      } catch {
+        // Skip malformed status payloads.
+      }
+    }
+    return { ...settings, devices };
   }
 
   ingest(payload: IngestRequest) {
