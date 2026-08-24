@@ -1,5 +1,6 @@
 import { isIP } from "node:net";
 
+import { runCursorCommand } from "./cursor";
 import { migrateLegacyGlobalInstallation } from "./installation";
 import { installService, setupRole } from "./onboard";
 import { runService } from "./run-service";
@@ -126,6 +127,15 @@ const usageText = (role: ServiceRole): string => {
           `  ${executable} auth code`,
           `  ${executable} auth devices`,
           `  ${executable} auth revoke <device-id>`,
+        ]
+      : []),
+    ...(role === "client"
+      ? [
+          `  ${executable} cursor login [--name <label>] [--token <session-token>]`,
+          `  ${executable} cursor accounts`,
+          `  ${executable} cursor switch <id-or-name>`,
+          `  ${executable} cursor logout <id-or-name> [--purge-cache]`,
+          `  ${executable} cursor sync [--force]`,
         ]
       : []),
     `  ${executable} --help`,
@@ -325,6 +335,10 @@ export const runCli = async (role: ServiceRole): Promise<void> => {
   }
   if (command === "rollback") {
     await rollbackRole(role);
+    return;
+  }
+  if (command === "cursor" && role === "client") {
+    await runCursorCommand(args);
     return;
   }
   usage(role);

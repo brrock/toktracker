@@ -26,7 +26,12 @@ import {
   parseOpenCodeJson,
   parseOpenCodeSqlite,
   parsePi,
+  parseCursorCsv,
+  parseOpenClaw,
   parseModelsDevCatalog,
+  resolveCursorPaths,
+  syncCursorUsageCaches,
+  listCursorUsageCsvFiles,
 } from "@toktracker/token-calc";
 import { z } from "zod";
 
@@ -34,9 +39,9 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Version 4 forces a complete source replacement so gateways heal rows that
-// older clients allowed the normalized store to compact.
-const INDEX_SCHEMA_VERSION = 4;
+// Version 5 forces a full source replacement so gateways pick up Cursor and
+// OpenClaw sessions that older clients never scanned.
+const INDEX_SCHEMA_VERSION = 5;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
@@ -290,6 +295,30 @@ async function discover(): Promise<Source[]> {
   if (process.env.COPILOT_OTEL_EXPORTER_FILE) {
     add({ kind: "copilot-otel", path: process.env.COPILOT_OTEL_EXPORTER_FILE });
   }
+  const cursorPaths = resolveCursorPaths(dataDir, home);
+  try {
+    const cursorSync = await syncCursorUsageCaches(cursorPaths);
+    if (cursorSync.error && !cursorSync.synced) {
+      console.warn(
+        `TokTracker: Cursor usage sync skipped (${cursorSync.error})`
+      );
+    }
+  } catch (error) {
+    console.warn("TokTracker: Cursor usage sync failed", error);
+  }
+  for (const path of await listCursorUsageCsvFiles(cursorPaths)) {
+    add({ kind: "cursor", path });
+  }
+  const openclawRoots = [
+    process.env.OPENCLAW_HOME,
+    join(home, ".openclaw"),
+    join(home, ".clawdbot"),
+    join(home, ".moltbot"),
+    join(home, ".moldbot"),
+  ].filter((root): root is string => Boolean(root));
+  for (const root of openclawRoots) {
+    await scan(join(root, "agents"), "**/*.jsonl*", "openclaw");
+  }
   return sources;
 }
 async function fingerprint(path: string, companion?: string) {
@@ -359,6 +388,12 @@ async function parseUnpriced(
         uri = workspace.folder ?? workspace.workspace;
       } catch {}
       return parseCopilotVsCode(text, source.path, uri);
+    }
+    case "cursor": {
+      return parseCursorCsv(text, source.path);
+    }
+    case "openclaw": {
+      return parseOpenClaw(text, source.path, mtime);
     }
     default: {
       return [];

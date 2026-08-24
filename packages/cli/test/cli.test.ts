@@ -20,3 +20,15 @@ test("prints help when invoked without a command", async () => {
   );
   log.mockRestore();
 });
+
+test("client help lists Cursor account commands", async () => {
+  process.argv = ["bun", "toktracker-client"];
+  const log = spyOn(console, "log").mockReturnValue();
+
+  await runCli("client");
+
+  expect(log).toHaveBeenCalledWith(
+    expect.stringContaining("toktracker-client cursor login")
+  );
+  log.mockRestore();
+});

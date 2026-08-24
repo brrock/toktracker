@@ -5,3 +5,6 @@ export * from "./aggregate";
 export * from "./identity";
 export * from "./extra-parsers";
 export * from "./copilot";
+export * from "./cursor";
+export * from "./cursor-accounts";
+export * from "./openclaw";
