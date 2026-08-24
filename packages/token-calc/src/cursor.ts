@@ -3,7 +3,7 @@
 import type { UsageMessage } from "@toktracker/shared";
 
 import { inferProvider } from "./identity";
-import { makeMessage } from "./model";
+import { canonicalModelId, makeMessage } from "./model";
 
 const parseCsvLine = (line: string): string[] => {
   const fields: string[] = [];
@@ -90,6 +90,30 @@ export const isCursorUsageCsvFilename = (name: string): boolean => {
   );
 };
 
+interface CursorWorkspace {
+  workspaceKey?: string;
+  workspaceLabel?: string;
+}
+
+const cursorWorkspace = (
+  cloudAgentId: string,
+  automationId: string
+): CursorWorkspace => {
+  if (cloudAgentId) {
+    return {
+      workspaceKey: `cursor-cloud-agent:${cloudAgentId}`,
+      workspaceLabel: `Cloud agent ${cloudAgentId}`,
+    };
+  }
+  if (automationId) {
+    return {
+      workspaceKey: `cursor-automation:${automationId}`,
+      workspaceLabel: `Automation ${automationId}`,
+    };
+  }
+  return {};
+};
+
 /** Port of tokscale-core Cursor usage CSV parser (v1/v2/v3 export formats). */
 export function parseCursorCsv(
   contents: string,
@@ -114,6 +138,8 @@ export function parseCursorCsv(
   const namedCost = columnIndex(headers, "Cost");
   const costIdx =
     namedCost === -1 ? columnIndex(headers, "Cost to you") : namedCost;
+  const cloudAgentIdx = columnIndex(headers, "Cloud Agent ID");
+  const automationIdx = columnIndex(headers, "Automation ID");
   if (
     dateIdx < 0 ||
     modelIdx < 0 ||
@@ -129,7 +155,7 @@ export function parseCursorCsv(
   const messages: UsageMessage[] = [];
   for (const line of lines.slice(1)) {
     const fields = parseCsvLine(line);
-    const model = cleanField(fields[modelIdx]);
+    const model = canonicalModelId(cleanField(fields[modelIdx]));
     if (!model) {
       continue;
     }
@@ -139,6 +165,11 @@ export function parseCursorCsv(
       continue;
     }
     const cost = parseFiniteCost(cleanField(fields[costIdx]));
+    const cloudAgentId =
+      cloudAgentIdx >= 0 ? cleanField(fields[cloudAgentIdx]) : "";
+    const automationId =
+      automationIdx >= 0 ? cleanField(fields[automationIdx]) : "";
+    const workspace = cursorWorkspace(cloudAgentId, automationId);
     messages.push(
       makeMessage({
         client: "cursor",
@@ -149,6 +180,7 @@ export function parseCursorCsv(
         providerId: inferProvider(model) ?? "cursor",
         sessionId: `cursor-${accountId}-${dateStr}`,
         timestamp,
+        ...workspace,
         tokens: {
           cacheRead: Math.max(
             0,

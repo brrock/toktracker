@@ -16,6 +16,7 @@ import {
   clampCursorSyncIntervalMs,
   DEFAULT_CURSOR_SYNC_INTERVAL_MS,
   isHermesMessage,
+  projectLabel,
   summarize,
   totalTokens,
 } from "@toktracker/token-calc";
@@ -306,11 +307,13 @@ const matchesSessionQuery = (
 };
 
 const sessionProject = (messages: UsageMessage[]): string => {
-  const projectMessage = messages.find((message) => !isHermesMessage(message));
-  if (!projectMessage) {
-    return "No project";
+  for (const message of messages) {
+    const project = projectLabel(message);
+    if (project) {
+      return project;
+    }
   }
-  return projectMessage.workspaceLabel ?? "Unknown project";
+  return "No project";
 };
 
 const messageFromRow = (row: StoredUsageRow): UsageMessage => ({
@@ -350,10 +353,11 @@ const addTokens = (total: TokenBreakdown, next: TokenBreakdown): void => {
 const sessionParts = (messages: UsageMessage[]): SessionUsagePart[] => {
   const parts: SessionUsagePart[] = [];
   for (const message of messages) {
+    const model = canonicalModelId(message.modelId);
     const previous = parts.at(-1);
     if (
       previous &&
-      previous.model === message.modelId &&
+      previous.model === model &&
       previous.provider === message.providerId
     ) {
       addTokens(previous.tokens, message.tokens);
@@ -369,7 +373,7 @@ const sessionParts = (messages: UsageMessage[]): SessionUsagePart[] => {
       cost: message.cost,
       lastSeen: message.timestamp + (message.durationMs ?? 0),
       messages: message.messageCount,
-      model: message.modelId,
+      model,
       provider: message.providerId,
       startedAt: message.timestamp,
       tokens: { ...message.tokens },
@@ -1029,12 +1033,9 @@ export class Store {
       if (totalTokens(message.tokens) > 0) {
         appendGroup(byModel, canonicalModelId(message.modelId), message);
       }
-      if (!isHermesMessage(message)) {
-        appendGroup(
-          byProject,
-          message.workspaceLabel ?? "Unknown project",
-          message
-        );
+      const project = projectLabel(message);
+      if (project) {
+        appendGroup(byProject, project, message);
       }
     }
     const agentDetails = summarizeGroups(byAgent);
@@ -1053,8 +1054,9 @@ export class Store {
           deviceId: identity.deviceId,
           id,
           lastSeen: Math.max(...list.map((message) => message.timestamp)),
-          model:
-            list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown",
+          model: canonicalModelId(
+            list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown"
+          ),
           project: sessionProject(list),
           sessionId: identity.sessionId,
           sourcePath: identity.sourcePath,
@@ -1194,6 +1196,7 @@ export class Store {
     const id = sessionApiId(identity);
     const key = `${row.device_id}\u0000${row.source_path}\u0000${row.session_id}`;
     const list = this.usageForSessions([row]).get(key) ?? [];
+    const topModel = list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId;
     const summary: SessionSummary = {
       client: list[0]?.client ?? "unknown",
       cost: list.reduce((value, message) => value + message.cost, 0),
@@ -1206,7 +1209,7 @@ export class Store {
         0,
         ...list.map((message) => message.timestamp + (message.durationMs ?? 0))
       ),
-      model: list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown",
+      model: topModel ? canonicalModelId(topModel) : "unknown",
       project: sessionProject(list),
       sessionId: identity.sessionId,
       sourcePath: identity.sourcePath,

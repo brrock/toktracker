@@ -47,9 +47,9 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Version 5 forces a full source replacement so gateways pick up Cursor and
-// OpenClaw sessions that older clients never scanned.
-const INDEX_SCHEMA_VERSION = 5;
+// Version 6 forces a rescan so Cursor CSV rows pick up Cloud Agent / Automation
+// project labels and stop filling the synthetic Unknown project bucket.
+const INDEX_SCHEMA_VERSION = 6;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;

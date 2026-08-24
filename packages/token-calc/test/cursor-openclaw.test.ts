@@ -66,6 +66,7 @@ describe("Cursor usage CSV parser", () => {
     const [next] = parseCursorCsv(v2, "/tmp/usage.csv");
     expect(next?.modelId).toBe("auto");
     expect(next?.providerId).toBe("cursor");
+    expect(next?.workspaceLabel).toBeUndefined();
     expect(next?.tokens.cacheRead).toBe(105_891);
     expect(next?.cost).toBe(0.19);
 
@@ -77,8 +78,21 @@ describe("Cursor usage CSV parser", () => {
     expect(rows[0]?.cost).toBe(0);
     expect(rows[0]?.costSource).toBe("unknown");
     expect(rows[0]?.sessionId).toBe("cursor-work-2026-04-09T20:01:10.528Z");
+    expect(rows[0]?.workspaceLabel).toBe("Cloud agent bc-a");
     expect(rows[1]?.cost).toBe(0.11);
     expect(rows[1]?.costSource).toBe("providerReported");
+    expect(rows[1]?.workspaceLabel).toBe("Cloud agent bc-b");
+  });
+
+  test("splits Cursor provider prefixes and reasoning depth from model ids", () => {
+    const csv = `Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+"2026-08-24T12:00:00.000Z","On-Demand","cursor-grok-4.6-medium","No","10","5","20","3","38","0.20"
+"2026-08-24T12:01:00.000Z","On-Demand","claude-opus-4-8-thinking-high","No","10","5","20","3","38","0.30"`;
+    const rows = parseCursorCsv(csv, "usage.csv");
+    expect(rows[0]?.modelId).toBe("grok-4.6");
+    expect(rows[0]?.providerId).toBe("xai");
+    expect(rows[1]?.modelId).toBe("claude-opus-4-8");
+    expect(rows[1]?.providerId).toBe("anthropic");
   });
 
   test("treats explicit zero cost as provider-reported", () => {

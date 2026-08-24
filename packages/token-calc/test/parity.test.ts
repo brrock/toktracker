@@ -167,6 +167,32 @@ describe("tokscale-core parity", () => {
     expect(summary.agents[0]?.tokens).toBe(15);
   });
 
+  test("does not invent a project when workspace is missing", () => {
+    const summary = summarize([
+      {
+        client: "cursor",
+        cost: 0.2,
+        costSource: "providerReported",
+        date: "2026-01-01",
+        isTurnStart: false,
+        messageCount: 1,
+        modelId: "grok-4.6",
+        providerId: "xai",
+        sessionId: "cursor-active-2026-01-01",
+        timestamp: Date.parse("2026-01-01T00:00:00Z"),
+        tokens: {
+          cacheRead: 0,
+          cacheWrite: 0,
+          input: 10,
+          output: 5,
+          reasoning: 0,
+        },
+      },
+    ]);
+    expect(summary.projects).toEqual([]);
+    expect(summary.totals.tokens).toBe(15);
+  });
+
   test("model canonicalization and million-token pricing mirror tokscale", () => {
     expect(canonicalModelId("Anthropic/Claude-4-5-Sonnet")).toBe(
       "claude-sonnet-4-5"
@@ -174,6 +200,12 @@ describe("tokscale-core parity", () => {
     expect(canonicalModelId("CLAUDE-3.5-SONNET-20241022")).toBe(
       "claude-3-5-sonnet"
     );
+    expect(canonicalModelId("cursor-grok-4.6-medium")).toBe("grok-4.6");
+    expect(canonicalModelId("claude-opus-4-8-thinking-high")).toBe(
+      "claude-opus-4-8"
+    );
+    expect(canonicalModelId("o4-mini-high")).toBe("o4-mini-high");
+    expect(canonicalModelId("cursor-small")).toBe("cursor-small");
     expect(
       calculateCost(
         {

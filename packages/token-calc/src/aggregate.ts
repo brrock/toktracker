@@ -26,6 +26,17 @@ export const isHermesMessage = (message: UsageMessage): boolean => {
   );
 };
 
+export const projectLabel = (message: UsageMessage): string | undefined => {
+  if (isHermesMessage(message)) {
+    return undefined;
+  }
+  const label = message.workspaceLabel?.trim();
+  if (!label || label.toLocaleLowerCase() === "unknown project") {
+    return undefined;
+  }
+  return label;
+};
+
 const add = <T extends { tokens: number; cost: number }>(
   map: Map<string, T>,
   key: string,
@@ -109,8 +120,8 @@ export const summarize = (
       const model = canonicalModelId(message.modelId);
       add(models, model, { cost: message.cost, name: model, tokens: amount });
     }
-    if (!isHermesMessage(message)) {
-      const project = message.workspaceLabel ?? "Unknown project";
+    const project = projectLabel(message);
+    if (project) {
       const item = projects.get(project) ?? {
         cost: 0,
         lastSeen: 0,

@@ -18,27 +18,73 @@ const tiers = new Set([
   "medium",
   "high",
   "xhigh",
+  "max",
   "auto",
   "none",
 ]);
+const providerPrefixes = new Set([
+  "anthropic",
+  "cursor",
+  "google",
+  "openai",
+  "xai",
+]);
+const thinkingSuffix =
+  /^(.*)-(thinking(?:-(?:minimal|low|medium|high|xhigh|max|auto|none))?)$/;
+const versionEffortSuffix =
+  /^(.*?[0-9]+(?:[.-][0-9]+)*)-(minimal|low|medium|high|xhigh|max|auto|none)$/;
+const modelFamily =
+  /^(claude|codex|composer|deepseek|gemini|glm|gpt|grok|kimi|llama|mistral|o[1-9]|qwen)\b/;
+
+const stripEffortSuffix = (name: string): string => {
+  const thinking = name.match(thinkingSuffix);
+  if (thinking?.[1]) {
+    return thinking[1];
+  }
+  const versioned = name.match(versionEffortSuffix);
+  return versioned?.[1] ?? name;
+};
+
+const stripProviderPrefix = (name: string): string => {
+  const slash = name.indexOf("/");
+  if (slash > 0) {
+    const prefix = name.slice(0, slash);
+    const rest = name.slice(slash + 1);
+    if (providerPrefixes.has(prefix) && modelFamily.test(rest)) {
+      return rest;
+    }
+  }
+  const hyphen = name.indexOf("-");
+  if (hyphen > 0) {
+    const prefix = name.slice(0, hyphen);
+    const rest = name.slice(hyphen + 1);
+    if (providerPrefixes.has(prefix) && modelFamily.test(rest)) {
+      return rest;
+    }
+  }
+  return name;
+};
+
 export function canonicalModelId(id: string): string {
   let name = id.toLowerCase();
-  const tier = name.match(/^(.*)\(([^()]*)\)$/);
-  if (tier && tier[1] && tier[1].trim() === tier[1] && tiers.has(tier[2]!)) {
-    name = tier[1];
+  const tier = name.match(/^(.*)(?:\s*)\(([^()]*)\)$/);
+  if (tier?.[1] && tiers.has(tier[2]!.trim())) {
+    name = tier[1].trimEnd();
   }
   if (/-\d{8}$/.test(name)) {
     name = name.slice(0, -9);
   }
+  name = stripEffortSuffix(name);
   if (name.includes("claude")) {
     name = name.replaceAll(/(?<=\d)\.(?=\d)/g, "-");
   }
   const anthropic = name.match(
     /^anthropic\/claude-(\d+)-(\d+)-(opus|sonnet|haiku)$/
   );
-  return anthropic
-    ? `claude-${anthropic[3]}-${anthropic[1]}-${anthropic[2]}`
-    : name;
+  if (anthropic) {
+    return `claude-${anthropic[3]}-${anthropic[1]}-${anthropic[2]}`;
+  }
+  return stripProviderPrefix(name);
 }
 
 export function makeMessage(
