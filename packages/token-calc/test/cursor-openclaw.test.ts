@@ -44,7 +44,7 @@ const jwtForUser = (userId: string): string => {
 };
 
 describe("Cursor usage CSV parser", () => {
-  test("parses v1, v2, and v3 exports with per-account sessions", () => {
+  test("parses v1 and v2 exports with per-account sessions", () => {
     const v1 = `Date,Model,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost,Cost to you
 2025-02-01,gpt-4o,10,5,0,15,30,$0.10,$0.10`;
     const [old] = parseCursorCsv(v1, "/tmp/usage.csv");
@@ -69,7 +69,9 @@ describe("Cursor usage CSV parser", () => {
     expect(next?.workspaceLabel).toBeUndefined();
     expect(next?.tokens.cacheRead).toBe(105_891);
     expect(next?.cost).toBe(0.19);
+  });
 
+  test("keeps Cloud Agent ids on the session title, not as a project", () => {
     const v3 = `Date,Cloud Agent ID,Automation ID,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
 "2026-04-09T20:01:10.528Z","bc-a","cc-a","Included","composer-2","Yes","0","343446","29045760","915201","30304407","Included"
 "2026-04-09T18:02:13.576Z","bc-b","cc-b","On-Demand","composer-2","Yes","0","43478","420864","7957","472299","0.11"`;
@@ -78,10 +80,12 @@ describe("Cursor usage CSV parser", () => {
     expect(rows[0]?.cost).toBe(0);
     expect(rows[0]?.costSource).toBe("unknown");
     expect(rows[0]?.sessionId).toBe("cursor-work-2026-04-09T20:01:10.528Z");
-    expect(rows[0]?.workspaceLabel).toBe("Cloud agent bc-a");
+    expect(rows[0]?.workspaceLabel).toBeUndefined();
+    expect(rows[0]?.sessionTitle).toBe("Cloud agent bc-a");
     expect(rows[1]?.cost).toBe(0.11);
     expect(rows[1]?.costSource).toBe("providerReported");
-    expect(rows[1]?.workspaceLabel).toBe("Cloud agent bc-b");
+    expect(rows[1]?.workspaceLabel).toBeUndefined();
+    expect(rows[1]?.sessionTitle).toBe("Cloud agent bc-b");
   });
 
   test("splits Cursor provider prefixes and reasoning depth from model ids", () => {

@@ -90,28 +90,17 @@ export const isCursorUsageCsvFilename = (name: string): boolean => {
   );
 };
 
-interface CursorWorkspace {
-  workspaceKey?: string;
-  workspaceLabel?: string;
-}
-
-const cursorWorkspace = (
+const cursorSessionTitle = (
   cloudAgentId: string,
   automationId: string
-): CursorWorkspace => {
+): string | undefined => {
   if (cloudAgentId) {
-    return {
-      workspaceKey: `cursor-cloud-agent:${cloudAgentId}`,
-      workspaceLabel: `Cloud agent ${cloudAgentId}`,
-    };
+    return `Cloud agent ${cloudAgentId}`;
   }
   if (automationId) {
-    return {
-      workspaceKey: `cursor-automation:${automationId}`,
-      workspaceLabel: `Automation ${automationId}`,
-    };
+    return `Automation ${automationId}`;
   }
-  return {};
+  return undefined;
 };
 
 /** Port of tokscale-core Cursor usage CSV parser (v1/v2/v3 export formats). */
@@ -169,7 +158,7 @@ export function parseCursorCsv(
       cloudAgentIdx >= 0 ? cleanField(fields[cloudAgentIdx]) : "";
     const automationId =
       automationIdx >= 0 ? cleanField(fields[automationIdx]) : "";
-    const workspace = cursorWorkspace(cloudAgentId, automationId);
+    const sessionTitle = cursorSessionTitle(cloudAgentId, automationId);
     messages.push(
       makeMessage({
         client: "cursor",
@@ -179,8 +168,8 @@ export function parseCursorCsv(
         modelId: model,
         providerId: inferProvider(model) ?? "cursor",
         sessionId: `cursor-${accountId}-${dateStr}`,
+        sessionTitle,
         timestamp,
-        ...workspace,
         tokens: {
           cacheRead: Math.max(
             0,

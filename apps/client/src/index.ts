@@ -47,9 +47,9 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Version 7 forces a rescan so Cursor Auto rows stay unpriced instead of
-// inheriting a catalog estimate from an unrelated `/auto` model.
-const INDEX_SCHEMA_VERSION = 7;
+// Version 8 drops Cloud Agent / Automation ids from project names; Cursor's
+// usage CSV has no workspace, so those ids stay on the session title instead.
+const INDEX_SCHEMA_VERSION = 8;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
