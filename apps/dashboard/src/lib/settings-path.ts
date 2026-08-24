@@ -14,7 +14,7 @@ export const parseSettingsPath = (pathname: string): ParsedSettingsPath => {
   const settingsSection = SETTINGS_SECTIONS.find((value) => value === section);
   return {
     isSettingsPath,
-    section: settingsSection,
+    section: isSettingsPath ? settingsSection : undefined,
     settingsOpen:
       isSettingsPath && (section === undefined || Boolean(settingsSection)),
   };
