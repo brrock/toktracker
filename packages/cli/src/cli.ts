@@ -1,6 +1,5 @@
 import { isIP } from "node:net";
 
-import { runCursorCommand } from "./cursor";
 import { migrateLegacyGlobalInstallation } from "./installation";
 import { installService, setupRole } from "./onboard";
 import { runService } from "./run-service";
@@ -338,6 +337,7 @@ export const runCli = async (role: ServiceRole): Promise<void> => {
     return;
   }
   if (command === "cursor" && role === "client") {
+    const { runCursorCommand } = await import("./cursor");
     await runCursorCommand(args);
     return;
   }

@@ -2,6 +2,7 @@
 import { homedir } from "node:os";
 import { join } from "node:path";
 
+import type { CursorPaths } from "../../token-calc/src/index.ts";
 import {
   importDesktopCursorAccounts,
   listCursorAccounts,
@@ -10,9 +11,7 @@ import {
   setActiveCursorAccount,
   syncCursorUsageCaches,
   upsertCursorAccount,
-} from "@toktracker/token-calc";
-import type { CursorPaths } from "@toktracker/token-calc";
-
+} from "../../token-calc/src/index.ts";
 import { readConfig } from "./runtime-config";
 
 const flagValue = (args: string[], name: string): string | undefined => {

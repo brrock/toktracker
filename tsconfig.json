@@ -6,6 +6,12 @@
     "strict": true,
     "skipLibCheck": true,
     "types": ["bun"],
+    "paths": {
+      "@toktracker/cli/client": ["./packages/cli/src/client.ts"],
+      "@toktracker/cli/gateway": ["./packages/cli/src/gateway.ts"],
+      "@toktracker/shared": ["./packages/shared/src/index.ts"],
+      "@toktracker/token-calc": ["./packages/token-calc/src/index.ts"]
+    },
     "allowImportingTsExtensions": true,
     "verbatimModuleSyntax": true,
     "noEmit": true
