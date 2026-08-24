@@ -31,6 +31,7 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6",
+    "shadcn": "4.19.0",
     "typescript": "~6",
     "vite": "^8"
   }
