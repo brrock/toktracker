@@ -4,7 +4,7 @@ const AGENT_LOGOS = {
   claude: "/agent-logos/client-claude.jpg",
   codex: "/agent-logos/client-openai.jpg",
   copilot: "/agent-logos/client-copilot.jpg",
-  cursor: "/agent-logos/client-cursor.jpg",
+  cursor: "/agent-logos/client-cursor.png",
   hermes: "/agent-logos/client-hermes.png",
   openclaw: "/agent-logos/client-openclaw.jpg",
   opencode: "/agent-logos/client-opencode.png",

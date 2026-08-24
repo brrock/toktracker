@@ -71,8 +71,9 @@ export const AgentPage = ({ data }: { data: DashboardSummary }) => {
   }
   return (
     <PageHeading
-      title={agent.name}
       description="Coding-agent usage across tracked sessions."
+      icon={<AgentLogo name={agent.name} size="size-8" />}
+      title={agent.name}
     >
       <section className="grid gap-3 sm:grid-cols-2">
         <Stat

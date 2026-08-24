@@ -7,10 +7,10 @@ import {
   MonitorSmartphone,
   ShieldBan,
   SlidersHorizontal,
-  Sparkles,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { AgentLogo } from "@/components/dashboard/primitives";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -215,24 +215,25 @@ export const SettingsNavigation = ({
     {(
       [
         { icon: SlidersHorizontal, label: "General", value: "general" },
-        { icon: Sparkles, label: "Cursor", value: "cursor" },
+        { icon: "cursor", label: "Cursor", value: "cursor" },
         { icon: MonitorSmartphone, label: "Devices", value: "devices" },
         { icon: Download, label: "Data & export", value: "export" },
       ] as const
-    ).map((item) => {
-      const Icon = item.icon;
-      return (
-        <button
-          type="button"
-          key={item.value}
-          onClick={() => setSection(item.value)}
-          className={`flex items-center gap-3 rounded-md px-3 py-2 text-left transition ${section === item.value ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
-        >
-          <Icon size={15} />
-          {item.label}
-        </button>
-      );
-    })}
+    ).map((item) => (
+      <button
+        type="button"
+        key={item.value}
+        onClick={() => setSection(item.value)}
+        className={`flex items-center gap-3 rounded-md px-3 py-2 text-left transition ${section === item.value ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+      >
+        {item.icon === "cursor" ? (
+          <AgentLogo name="cursor" size="size-4" />
+        ) : (
+          <item.icon size={15} />
+        )}
+        {item.label}
+      </button>
+    ))}
   </nav>
 );
 
@@ -618,7 +619,10 @@ export const SettingsPage = ({
       ) ?? cursorSettings?.devices[0];
     return (
       <section className="max-w-3xl">
-        <h2 className="text-2xl font-semibold tracking-tight">Cursor</h2>
+        <div className="flex items-center gap-3">
+          <AgentLogo name="cursor" size="size-8" />
+          <h2 className="text-2xl font-semibold tracking-tight">Cursor</h2>
+        </div>
         <p className="mt-1 text-sm text-muted-foreground">
           Development mode imports your Cursor desktop login automatically.
           Change accounts and how often usage is synced here.
