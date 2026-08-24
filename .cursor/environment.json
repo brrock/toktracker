@@ -1,0 +1,15 @@
+{
+  "name": "TokTracker",
+  "install": "bash .cursor/install.sh",
+  "terminals": [
+    {
+      "name": "dev",
+      "command": "export BUN_INSTALL=\"$HOME/.bun\" && export PATH=\"$BUN_INSTALL/bin:$PATH\" && bun run dev",
+      "description": "TokTracker development stack. Dashboard: http://localhost:5173 (auth disabled in dev). Gateway API: http://localhost:4310. Also runs the local client scanner."
+    }
+  ],
+  "ports": [
+    { "name": "dashboard", "port": 5173 },
+    { "name": "gateway", "port": 4310 }
+  ]
+}
