@@ -2,7 +2,7 @@
 // CSV column layout follows tokscale-core sessions::cursor.
 import type { UsageMessage } from "@toktracker/shared";
 
-import { inferProvider } from "./identity";
+import { inferProvider, normalizeWorkspace } from "./identity";
 import { canonicalModelId, makeMessage } from "./model";
 
 const parseCsvLine = (line: string): string[] => {
@@ -90,6 +90,13 @@ export const isCursorUsageCsvFilename = (name: string): boolean => {
   );
 };
 
+export interface ParseCursorCsvOptions {
+  agentWorkspaces?: Record<string, string>;
+  includeAutomations?: boolean;
+  includeCloudAgents?: boolean;
+  skipLocalRows?: boolean;
+}
+
 const cursorSessionTitle = (
   cloudAgentId: string,
   automationId: string
@@ -103,10 +110,41 @@ const cursorSessionTitle = (
   return undefined;
 };
 
+const cursorSessionId = (
+  accountId: string,
+  dateStr: string,
+  cloudAgentId: string,
+  automationId: string
+): string => {
+  if (cloudAgentId) {
+    return `cursor-cloud-${cloudAgentId}`;
+  }
+  if (automationId) {
+    return `cursor-automation-${automationId}`;
+  }
+  return `cursor-${accountId}-${dateStr}`;
+};
+
+export const listCursorCsvCloudAgentIds = (contents: string): string[] => {
+  const ids = new Set<string>();
+  for (const message of parseCursorCsv(contents, "usage.csv", {
+    includeAutomations: false,
+    includeCloudAgents: true,
+    skipLocalRows: true,
+  })) {
+    const prefix = "cursor-cloud-";
+    if (message.sessionId.startsWith(prefix)) {
+      ids.add(message.sessionId.slice(prefix.length));
+    }
+  }
+  return [...ids];
+};
+
 /** Port of tokscale-core Cursor usage CSV parser (v1/v2/v3 export formats). */
 export function parseCursorCsv(
   contents: string,
-  sourcePath: string
+  sourcePath: string,
+  options: ParseCursorCsvOptions = {}
 ): UsageMessage[] {
   const lines = contents.split(/\r?\n/).filter((line) => line.trim());
   const headerLine = lines[0];
@@ -158,7 +196,25 @@ export function parseCursorCsv(
       cloudAgentIdx >= 0 ? cleanField(fields[cloudAgentIdx]) : "";
     const automationId =
       automationIdx >= 0 ? cleanField(fields[automationIdx]) : "";
+    const isCloud = cloudAgentId.length > 0;
+    const isAutomation = automationId.length > 0 && !isCloud;
+    const isLocal = !(isCloud || isAutomation);
+    if (isCloud && options.includeCloudAgents === false) {
+      continue;
+    }
+    if (isAutomation && options.includeAutomations === false) {
+      continue;
+    }
+    if (isLocal && options.skipLocalRows) {
+      continue;
+    }
     const sessionTitle = cursorSessionTitle(cloudAgentId, automationId);
+    const workspaceRaw = isCloud
+      ? options.agentWorkspaces?.[cloudAgentId]
+      : undefined;
+    const workspace = workspaceRaw
+      ? normalizeWorkspace(workspaceRaw)
+      : undefined;
     messages.push(
       makeMessage({
         client: "cursor",
@@ -167,7 +223,12 @@ export function parseCursorCsv(
         dedupKey: `cursor:${accountId}:${dateStr}:${model}:${messages.length}`,
         modelId: model,
         providerId: inferProvider(model) ?? "cursor",
-        sessionId: `cursor-${accountId}-${dateStr}`,
+        sessionId: cursorSessionId(
+          accountId,
+          dateStr,
+          cloudAgentId,
+          automationId
+        ),
         sessionTitle,
         timestamp,
         tokens: {
@@ -189,6 +250,8 @@ export function parseCursorCsv(
           ),
           reasoning: 0,
         },
+        workspaceKey: workspace?.key,
+        workspaceLabel: workspace?.label,
       })
     );
   }

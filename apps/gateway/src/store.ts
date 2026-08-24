@@ -92,17 +92,20 @@ export type CursorCommandDraft =
   | { type: "import-desktop" };
 
 export interface CursorDashboardSettings {
+  cloudAgentApiKey?: string;
   enabled: boolean;
+  includeAutomations: boolean;
+  includeCloudAgents: boolean;
   syncIntervalMs: number;
+  t3Home?: string;
+  useT3CodeLocalSessions: boolean;
 }
 
-export interface CursorDashboardOverview {
+export interface CursorDashboardOverview extends CursorDashboardSettings {
   devices: (CursorDeviceStatus & {
     name?: string;
     updatedAt: number;
   })[];
-  enabled: boolean;
-  syncIntervalMs: number;
 }
 
 const clientAutoUpdateSettingsSchema: z.ZodType<ClientAutoUpdateSettings> =
@@ -144,11 +147,15 @@ const storedCursorDeviceStatusSchema: z.ZodType<CursorDeviceStatus> = z.object({
   lastSyncAt: z.number().int().safe().nonnegative().optional(),
   syncIntervalMs: z.number().finite().positive(),
 });
-const cursorDashboardSettingsSchema: z.ZodType<CursorDashboardSettings> =
-  z.object({
-    enabled: z.boolean(),
-    syncIntervalMs: z.number().finite().positive(),
-  });
+const cursorDashboardSettingsSchema = z.object({
+  cloudAgentApiKey: z.string().max(512).optional(),
+  enabled: z.boolean(),
+  includeAutomations: z.boolean().optional(),
+  includeCloudAgents: z.boolean().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+  t3Home: z.string().max(1024).optional(),
+  useT3CodeLocalSessions: z.boolean().optional(),
+});
 const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
   z.discriminatedUnion("type", [
     z.object({
@@ -174,8 +181,44 @@ const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
   ]);
 const DEFAULT_CURSOR_DASHBOARD_SETTINGS: CursorDashboardSettings = {
   enabled: true,
+  includeAutomations: false,
+  includeCloudAgents: false,
   syncIntervalMs: DEFAULT_CURSOR_SYNC_INTERVAL_MS,
+  useT3CodeLocalSessions: true,
 };
+
+const optionalTrimmed = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+};
+
+const normalizeCursorDashboardSettings = (
+  input: z.infer<typeof cursorDashboardSettingsSchema>,
+  previous?: CursorDashboardSettings
+): CursorDashboardSettings => ({
+  cloudAgentApiKey:
+    input.cloudAgentApiKey === undefined
+      ? previous?.cloudAgentApiKey
+      : optionalTrimmed(input.cloudAgentApiKey),
+  enabled: input.enabled,
+  includeAutomations:
+    input.includeAutomations ??
+    previous?.includeAutomations ??
+    DEFAULT_CURSOR_DASHBOARD_SETTINGS.includeAutomations,
+  includeCloudAgents:
+    input.includeCloudAgents ??
+    previous?.includeCloudAgents ??
+    DEFAULT_CURSOR_DASHBOARD_SETTINGS.includeCloudAgents,
+  syncIntervalMs: clampCursorSyncIntervalMs(input.syncIntervalMs),
+  t3Home:
+    input.t3Home === undefined
+      ? previous?.t3Home
+      : optionalTrimmed(input.t3Home),
+  useT3CodeLocalSessions:
+    input.useT3CodeLocalSessions ??
+    previous?.useT3CodeLocalSessions ??
+    DEFAULT_CURSOR_DASHBOARD_SETTINGS.useT3CodeLocalSessions,
+});
 
 interface StoredSessionRow {
   device_id: string;
@@ -693,10 +736,7 @@ export class Store {
         JSON.parse(row.value)
       );
       if (parsed.success) {
-        return {
-          enabled: parsed.data.enabled,
-          syncIntervalMs: clampCursorSyncIntervalMs(parsed.data.syncIntervalMs),
-        };
+        return normalizeCursorDashboardSettings(parsed.data);
       }
     } catch {
       // Invalid persisted settings fall back to the enabled default.
@@ -707,10 +747,7 @@ export class Store {
   setCursorDashboardSettings(
     settings: CursorDashboardSettings
   ): CursorDashboardSettings {
-    const next = {
-      enabled: settings.enabled,
-      syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
-    };
+    const next = normalizeCursorDashboardSettings(settings);
     this.db
       .query(
         "INSERT INTO gateway_settings(key,value) VALUES('cursor_dashboard',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"

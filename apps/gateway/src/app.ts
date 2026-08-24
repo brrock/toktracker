@@ -17,7 +17,6 @@ import { z } from "zod";
 
 import type {
   ClientAutoUpdateSettings,
-  CursorDashboardSettings,
   CursorDeviceStatus,
   DashboardCredentials,
   Store,
@@ -50,8 +49,13 @@ const clientAutoUpdateSettingsSchema = z.object({
   windowStartHour: z.number().int().min(0).max(23),
 });
 const cursorDashboardSettingsSchema = z.object({
+  cloudAgentApiKey: z.string().max(512).optional(),
   enabled: z.boolean(),
+  includeAutomations: z.boolean().optional(),
+  includeCloudAgents: z.boolean().optional(),
   syncIntervalMs: z.number().finite().positive(),
+  t3Home: z.string().max(1024).optional(),
+  useT3CodeLocalSessions: z.boolean().optional(),
 });
 const cursorDeviceStatusSchema = z.object({
   accounts: z
@@ -293,9 +297,14 @@ export const createApp = (
     const deviceId = context.req.query("deviceId")?.trim() ?? "";
     const settings = store.cursorDashboardSettings();
     return context.json({
+      cloudAgentApiKey: settings.cloudAgentApiKey,
       commands: deviceId ? store.cursorCommandsForDevice(deviceId) : [],
       enabled: settings.enabled,
+      includeAutomations: settings.includeAutomations,
+      includeCloudAgents: settings.includeCloudAgents,
       syncIntervalMs: settings.syncIntervalMs,
+      t3Home: settings.t3Home,
+      useT3CodeLocalSessions: settings.useT3CodeLocalSessions,
     });
   });
   app.post("/api/v1/client-cursor-status", async (context) => {
@@ -325,7 +334,7 @@ export const createApp = (
     context.json(store.cursorDashboardOverview())
   );
   app.put("/api/v1/settings/cursor", async (context) => {
-    let settings: CursorDashboardSettings;
+    let settings: z.infer<typeof cursorDashboardSettingsSchema>;
     try {
       settings = cursorDashboardSettingsSchema.parse(await context.req.json());
     } catch {
@@ -333,8 +342,13 @@ export const createApp = (
     }
     return context.json(
       store.setCursorDashboardSettings({
+        cloudAgentApiKey: settings.cloudAgentApiKey,
         enabled: settings.enabled,
+        includeAutomations: settings.includeAutomations ?? false,
+        includeCloudAgents: settings.includeCloudAgents ?? false,
         syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
+        t3Home: settings.t3Home,
+        useT3CodeLocalSessions: settings.useT3CodeLocalSessions ?? true,
       })
     );
   });

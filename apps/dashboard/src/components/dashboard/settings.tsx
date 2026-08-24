@@ -62,9 +62,14 @@ interface CursorDeviceOverview {
 }
 
 interface CursorOverview {
+  cloudAgentApiKey?: string;
   devices: CursorDeviceOverview[];
   enabled: boolean;
+  includeAutomations: boolean;
+  includeCloudAgents: boolean;
   syncIntervalMs: number;
+  t3Home?: string;
+  useT3CodeLocalSessions: boolean;
 }
 
 const startOfDay = (date: Date): Date =>
@@ -420,8 +425,13 @@ export const SettingsPage = ({
     try {
       const response = await apiFetch("/api/v1/settings/cursor", {
         body: JSON.stringify({
+          cloudAgentApiKey: cursorSettings.cloudAgentApiKey,
           enabled: cursorSettings.enabled,
+          includeAutomations: cursorSettings.includeAutomations,
+          includeCloudAgents: cursorSettings.includeCloudAgents,
           syncIntervalMs: cursorSettings.syncIntervalMs,
+          t3Home: cursorSettings.t3Home,
+          useT3CodeLocalSessions: cursorSettings.useT3CodeLocalSessions,
         }),
         headers: { "content-type": "application/json" },
         method: "PUT",
@@ -654,12 +664,113 @@ export const SettingsPage = ({
                   }
                 />
               </label>
+              <label
+                htmlFor="cursor-t3-local"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="cursor-t3-local"
+                  checked={cursorSettings.useT3CodeLocalSessions}
+                  onCheckedChange={(checked) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      useT3CodeLocalSessions: checked === true,
+                    })
+                  }
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Use T3 Code for local Cursor sessions
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Read workspace and title from T3 Code’s SQLite state instead
+                    of local rows in Cursor’s usage CSV.
+                  </span>
+                </span>
+              </label>
+              <label
+                htmlFor="cursor-include-cloud"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="cursor-include-cloud"
+                  checked={cursorSettings.includeCloudAgents}
+                  onCheckedChange={(checked) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      includeCloudAgents: checked === true,
+                    })
+                  }
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Include Cloud Agents
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Keep Cloud Agent rows from the usage CSV and attach their
+                    git workspace from the Cloud Agents API.
+                  </span>
+                </span>
+              </label>
+              <label
+                htmlFor="cursor-include-automations"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="cursor-include-automations"
+                  checked={cursorSettings.includeAutomations}
+                  onCheckedChange={(checked) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      includeAutomations: checked === true,
+                    })
+                  }
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Include Automations
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Keep Automation rows from the usage CSV.
+                  </span>
+                </span>
+              </label>
+              <label htmlFor="cursor-api-key" className="grid gap-1 text-sm">
+                Cloud Agents API key
+                <Input
+                  id="cursor-api-key"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="Cursor Dashboard → API Keys"
+                  value={cursorSettings.cloudAgentApiKey ?? ""}
+                  onChange={(event) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      cloudAgentApiKey: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <label htmlFor="cursor-t3-home" className="grid gap-1 text-sm">
+                T3 Code home (optional)
+                <Input
+                  id="cursor-t3-home"
+                  placeholder="~/.t3"
+                  value={cursorSettings.t3Home ?? ""}
+                  onChange={(event) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      t3Home: event.target.value,
+                    })
+                  }
+                />
+              </label>
               <Button
                 disabled={savingCursor}
                 size="sm"
                 onClick={saveCursorSettings}
               >
-                {savingCursor ? "Saving…" : "Save sync interval"}
+                {savingCursor ? "Saving…" : "Save Cursor settings"}
               </Button>
             </div>
           )}

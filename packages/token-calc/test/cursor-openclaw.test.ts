@@ -9,16 +9,20 @@ import { join } from "node:path";
 import type { CursorFetch } from "../src";
 import {
   deriveAccountId,
+  fetchCloudAgentWorkspaces,
   listCursorUsageCsvFiles,
   normalizeCursorSessionToken,
   parseCursorCsv,
   parseOpenClaw,
   parseOpenClawIndex,
+  parseT3CodeCursorSqlite,
   readDesktopCursorSessions,
   resolveCursorPaths,
   sessionTokenFromAccessToken,
   syncCursorUsageCaches,
+  t3CodeStateSqliteCandidates,
   upsertCursorAccount,
+  workspaceFromCloudAgentPayload,
 } from "../src";
 
 const dirs: string[] = [];
@@ -79,13 +83,45 @@ describe("Cursor usage CSV parser", () => {
     expect(rows).toHaveLength(2);
     expect(rows[0]?.cost).toBe(0);
     expect(rows[0]?.costSource).toBe("unknown");
-    expect(rows[0]?.sessionId).toBe("cursor-work-2026-04-09T20:01:10.528Z");
+    expect(rows[0]?.sessionId).toBe("cursor-cloud-bc-a");
     expect(rows[0]?.workspaceLabel).toBeUndefined();
     expect(rows[0]?.sessionTitle).toBe("Cloud agent bc-a");
     expect(rows[1]?.cost).toBe(0.11);
     expect(rows[1]?.costSource).toBe("providerReported");
     expect(rows[1]?.workspaceLabel).toBeUndefined();
     expect(rows[1]?.sessionTitle).toBe("Cloud agent bc-b");
+    expect(rows[1]?.sessionId).toBe("cursor-cloud-bc-b");
+  });
+
+  test("can skip Cloud Agent, Automation, and local CSV rows", () => {
+    const csv = `Date,Cloud Agent ID,Automation ID,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+"2026-04-09T20:01:10.528Z","bc-a","","Included","composer-2","Yes","0","1","0","1","2","0.01"
+"2026-04-09T18:02:13.576Z","","cc-a","On-Demand","composer-2","Yes","0","1","0","1","2","0.02"
+"2026-04-09T16:00:00.000Z","","","On-Demand","composer-2","Yes","0","1","0","1","2","0.03"`;
+    expect(
+      parseCursorCsv(csv, "usage.csv", {
+        includeAutomations: false,
+        includeCloudAgents: false,
+        skipLocalRows: true,
+      })
+    ).toHaveLength(0);
+    const cloudOnly = parseCursorCsv(csv, "usage.csv", {
+      agentWorkspaces: {
+        "bc-a": "https://github.com/acme/toktracker",
+      },
+      includeAutomations: false,
+      includeCloudAgents: true,
+      skipLocalRows: true,
+    });
+    expect(cloudOnly).toHaveLength(1);
+    expect(cloudOnly[0]?.sessionId).toBe("cursor-cloud-bc-a");
+    expect(cloudOnly[0]?.workspaceLabel).toBe("toktracker");
+    const automations = parseCursorCsv(csv, "usage.csv", {
+      includeAutomations: true,
+      includeCloudAgents: false,
+      skipLocalRows: true,
+    });
+    expect(automations[0]?.sessionId).toBe("cursor-automation-cc-a");
   });
 
   test("splits Cursor provider prefixes and reasoning depth from model ids", () => {
@@ -225,5 +261,103 @@ describe("OpenClaw transcript parser", () => {
     );
     expect(loaded[0]?.sessionId).toBe("fallback-123");
     expect(loaded[0]?.modelId).toBe("claude-3.5-sonnet");
+  });
+});
+
+describe("Cursor Cloud Agent workspaces", () => {
+  test("prefers the git repo from the agent payload", () => {
+    expect(
+      workspaceFromCloudAgentPayload({
+        name: "Fix login",
+        repos: [{ url: "https://github.com/acme/toktracker.git" }],
+      })
+    ).toBe("https://github.com/acme/toktracker.git");
+  });
+
+  test("fetches and caches agent workspaces", async () => {
+    const dir = await temp();
+    const cachePath = join(dir, "cloud-agent-workspaces.json");
+    let calls = 0;
+    const fetchImpl: CursorFetch = async (url) => {
+      calls += 1;
+      const id = String(url).split("/").at(-1);
+      return Response.json({
+        id,
+        repos: [{ url: `https://github.com/acme/${id}` }],
+      });
+    };
+    const first = await fetchCloudAgentWorkspaces(["bc-a"], {
+      apiKey: "key",
+      cachePath,
+      fetchImpl,
+    });
+    expect(first["bc-a"]).toBe("https://github.com/acme/bc-a");
+    const second = await fetchCloudAgentWorkspaces(["bc-a"], {
+      apiKey: "key",
+      cachePath,
+      fetchImpl,
+    });
+    expect(second["bc-a"]).toBe("https://github.com/acme/bc-a");
+    expect(calls).toBe(1);
+  });
+});
+
+describe("T3 Code Cursor sessions", () => {
+  test("discovers userdata sqlite under ~/.t3 and T3CODE_HOME", () => {
+    expect(t3CodeStateSqliteCandidates("/home/u")).toEqual([
+      "/home/u/.t3/userdata/state.sqlite",
+      "/home/u/.t3/dev/userdata/state.sqlite",
+    ]);
+    expect(t3CodeStateSqliteCandidates("/home/u", "/tmp/custom-t3")).toEqual([
+      "/tmp/custom-t3/userdata/state.sqlite",
+      "/tmp/custom-t3/dev/userdata/state.sqlite",
+      "/home/u/.t3/userdata/state.sqlite",
+      "/home/u/.t3/dev/userdata/state.sqlite",
+    ]);
+  });
+
+  test("parses Cursor threads with workspace and title", async () => {
+    const dir = await temp();
+    const path = join(dir, "state.sqlite");
+    const db = new Database(path);
+    db.run(`CREATE TABLE projection_projects (
+      project_id TEXT PRIMARY KEY,
+      title TEXT,
+      workspace_root TEXT
+    )`);
+    db.run(`CREATE TABLE projection_threads (
+      thread_id TEXT PRIMARY KEY,
+      project_id TEXT,
+      title TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      deleted_at TEXT,
+      model_selection_json TEXT
+    )`);
+    db.run(`CREATE TABLE projection_thread_sessions (
+      thread_id TEXT PRIMARY KEY,
+      provider_name TEXT
+    )`);
+    db.run(
+      "INSERT INTO projection_projects VALUES ('p1','TokTracker','/home/u/src/toktracker')"
+    );
+    db.run(
+      "INSERT INTO projection_threads VALUES ('t1','p1','Wire Cursor ingest','2026-08-01T12:00:00.000Z','2026-08-01T12:00:00.000Z',NULL,?)",
+      [JSON.stringify({ model: "composer-2", provider: "cursor" })]
+    );
+    db.run("INSERT INTO projection_thread_sessions VALUES ('t1','cursor')");
+    db.run(
+      "INSERT INTO projection_threads VALUES ('t2','p1','Codex work','2026-08-01T12:00:00.000Z','2026-08-01T12:00:00.000Z',NULL,?)",
+      [JSON.stringify({ model: "gpt-5.4", provider: "codex" })]
+    );
+    db.run("INSERT INTO projection_thread_sessions VALUES ('t2','codex')");
+    db.close();
+    const rows = parseT3CodeCursorSqlite(path);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.sessionId).toBe("cursor-t3-t1");
+    expect(rows[0]?.sessionTitle).toBe("Wire Cursor ingest");
+    expect(rows[0]?.workspaceLabel).toBe("toktracker");
+    expect(rows[0]?.modelId).toBe("composer-2");
+    expect(rows[0]?.costSource).toBe("unknown");
   });
 });

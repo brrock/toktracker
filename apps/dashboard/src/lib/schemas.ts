@@ -115,6 +115,7 @@ export const cursorAccountStatusSchema = z.object({
   label: z.string().optional(),
 });
 export const cursorDashboardOverviewSchema = z.object({
+  cloudAgentApiKey: z.string().optional(),
   devices: z.array(
     z.object({
       accounts: z.array(cursorAccountStatusSchema),
@@ -129,6 +130,10 @@ export const cursorDashboardOverviewSchema = z.object({
     })
   ),
   enabled: z.boolean(),
+  includeAutomations: z.boolean().optional().default(false),
+  includeCloudAgents: z.boolean().optional().default(false),
   syncIntervalMs: z.number().finite(),
+  t3Home: z.string().optional(),
+  useT3CodeLocalSessions: z.boolean().optional().default(true),
 });
 export const errorResponseSchema = z.object({ error: z.string() });

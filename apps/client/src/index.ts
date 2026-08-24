@@ -1,4 +1,4 @@
-/* eslint-disable func-style, no-await-in-loop, no-empty, no-nested-ternary, promise/prefer-await-to-then, require-unicode-regexp, sort-vars, typescript/no-non-null-assertion, unicorn/import-style */
+/* eslint-disable complexity, func-style, no-await-in-loop, no-empty, no-nested-ternary, promise/prefer-await-to-then, require-unicode-regexp, sort-vars, typescript/no-non-null-assertion, unicorn/import-style */
 // Source scans are deliberately sequential to bound memory and open-file usage.
 import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
@@ -18,9 +18,12 @@ import {
   applyEstimatedPricing,
   clampCursorSyncIntervalMs,
   DEFAULT_CURSOR_SYNC_INTERVAL_MS,
+  fetchCloudAgentWorkspaces,
   importDesktopCursorAccounts,
   listCursorAccounts,
+  listCursorCsvCloudAgentIds,
   listCursorUsageCsvFiles,
+  listT3CodeStateSqliteFiles,
   parseClaude,
   parseCodex,
   parseCopilotDesktopSqlite,
@@ -34,6 +37,7 @@ import {
   parseOpenCodeJson,
   parseOpenCodeSqlite,
   parsePi,
+  parseT3CodeCursorSqlite,
   readDesktopCursorSessions,
   removeCursorAccount,
   resolveCursorPaths,
@@ -47,9 +51,10 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Version 8 drops Cloud Agent / Automation ids from project names; Cursor's
-// usage CSV has no workspace, so those ids stay on the session title instead.
-const INDEX_SCHEMA_VERSION = 8;
+// Version 9 reads local Cursor sessions from T3 Code and optional Cloud Agent
+// workspaces from the Cursor API instead of treating the usage CSV as the only
+// local source.
+const INDEX_SCHEMA_VERSION = 9;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
@@ -67,6 +72,20 @@ let cursorSyncIntervalMs = clampCursorSyncIntervalMs(
 );
 let cursorLastError: string | undefined;
 let cursorLastSyncAt: number | undefined;
+let cursorCloudAgentWorkspaces: Record<string, string> = {};
+interface CursorIngestPolicy {
+  cloudAgentApiKey?: string;
+  includeAutomations: boolean;
+  includeCloudAgents: boolean;
+  t3Home?: string;
+  useT3CodeLocalSessions: boolean;
+}
+
+const cursorIngestPolicy: CursorIngestPolicy = {
+  includeAutomations: false,
+  includeCloudAgents: false,
+  useT3CodeLocalSessions: true,
+};
 
 const optionalStringSchema = z.string();
 const historyRowSchema = z.record(z.string(), z.json());
@@ -342,8 +361,52 @@ async function discover(): Promise<Source[]> {
     cursorLastError = error instanceof Error ? error.message : String(error);
     console.warn("TokTracker: Cursor usage sync failed", error);
   }
-  for (const path of await listCursorUsageCsvFiles(cursorPaths)) {
-    add({ kind: "cursor", path });
+  const csvFiles = await listCursorUsageCsvFiles(cursorPaths);
+  const needCursorCsv =
+    !cursorIngestPolicy.useT3CodeLocalSessions ||
+    cursorIngestPolicy.includeCloudAgents ||
+    cursorIngestPolicy.includeAutomations;
+  if (needCursorCsv) {
+    if (
+      cursorIngestPolicy.includeCloudAgents &&
+      cursorIngestPolicy.cloudAgentApiKey
+    ) {
+      const agentIds = new Set<string>();
+      for (const path of csvFiles) {
+        for (const agentId of listCursorCsvCloudAgentIds(
+          await Bun.file(path).text()
+        )) {
+          agentIds.add(agentId);
+        }
+      }
+      try {
+        cursorCloudAgentWorkspaces = await fetchCloudAgentWorkspaces(
+          [...agentIds],
+          {
+            apiKey: cursorIngestPolicy.cloudAgentApiKey,
+            cachePath: join(
+              cursorPaths.cacheDir,
+              "cloud-agent-workspaces.json"
+            ),
+          }
+        );
+      } catch (error) {
+        console.warn("TokTracker: Cloud agent workspace lookup failed", error);
+      }
+    } else {
+      cursorCloudAgentWorkspaces = {};
+    }
+    for (const path of csvFiles) {
+      add({ kind: "cursor", path });
+    }
+  }
+  if (cursorIngestPolicy.useT3CodeLocalSessions) {
+    for (const path of listT3CodeStateSqliteFiles(
+      home,
+      cursorIngestPolicy.t3Home
+    )) {
+      add({ kind: "t3code-cursor", path });
+    }
   }
   const openclawRoots = [
     process.env.OPENCLAW_HOME,
@@ -400,6 +463,9 @@ async function parseUnpriced(
     } catch {}
     return parseCopilotDesktopSqlite(source.path, events);
   }
+  if (source.kind === "t3code-cursor") {
+    return parseT3CodeCursorSqlite(source.path);
+  }
   const text = await Bun.file(source.path).text();
   switch (source.kind) {
     case "claude": {
@@ -426,7 +492,12 @@ async function parseUnpriced(
       return parseCopilotVsCode(text, source.path, uri);
     }
     case "cursor": {
-      return parseCursorCsv(text, source.path);
+      return parseCursorCsv(text, source.path, {
+        agentWorkspaces: cursorCloudAgentWorkspaces,
+        includeAutomations: cursorIngestPolicy.includeAutomations,
+        includeCloudAgents: cursorIngestPolicy.includeCloudAgents,
+        skipLocalRows: cursorIngestPolicy.useT3CodeLocalSessions,
+      });
     }
     case "openclaw": {
       return parseOpenClaw(text, source.path, mtime);
@@ -459,7 +530,12 @@ interface SyncPlan {
   sourceUpdates: NonNullable<IngestRequest["sourceUpdates"]>;
   scans: ScanState[];
 }
-const sqliteKinds = new Set(["opencode-sqlite", "hermes", "copilot-desktop"]);
+const sqliteKinds = new Set([
+  "opencode-sqlite",
+  "hermes",
+  "copilot-desktop",
+  "t3code-cursor",
+]);
 const sessionHash = (messages: UsageMessage[]) =>
   Bun.hash(JSON.stringify(messages)).toString(16);
 
@@ -853,6 +929,7 @@ const cursorDashboardEnabled = (): boolean =>
   process.env.TOKTRACKER_CURSOR_DASHBOARD !== "0";
 
 const cursorClientPolicySchema = z.object({
+  cloudAgentApiKey: z.string().optional(),
   commands: z.array(
     z.object({
       accountId: z.string().optional(),
@@ -862,7 +939,11 @@ const cursorClientPolicySchema = z.object({
       type: z.string(),
     })
   ),
+  includeAutomations: z.boolean().optional(),
+  includeCloudAgents: z.boolean().optional(),
   syncIntervalMs: z.number().finite().positive(),
+  t3Home: z.string().optional(),
+  useT3CodeLocalSessions: z.boolean().optional(),
 });
 
 const gatewayHeaders = (): Headers => {
@@ -895,6 +976,13 @@ const applyCursorCommands = async (): Promise<void> => {
     }
     const policy = cursorClientPolicySchema.parse(await policyResponse.json());
     cursorSyncIntervalMs = clampCursorSyncIntervalMs(policy.syncIntervalMs);
+    cursorIngestPolicy.cloudAgentApiKey =
+      policy.cloudAgentApiKey?.trim() || undefined;
+    cursorIngestPolicy.includeAutomations = policy.includeAutomations ?? false;
+    cursorIngestPolicy.includeCloudAgents = policy.includeCloudAgents ?? false;
+    cursorIngestPolicy.t3Home = policy.t3Home?.trim() || undefined;
+    cursorIngestPolicy.useT3CodeLocalSessions =
+      policy.useT3CodeLocalSessions ?? true;
     const acknowledged: string[] = [];
     for (const command of policy.commands) {
       try {
