@@ -6,6 +6,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import {
+  applyEstimatedPricing,
+  findModelPrice,
+  makeMessage,
   parseCopilotDesktopSqlite,
   parseCopilotOtel,
   parseCopilotVsCode,
@@ -247,5 +250,37 @@ describe("additional tokscale client parity", () => {
     expect(messages).toHaveLength(1);
     expect(messages[0]?.tokens.input).toBe(75);
     expect(messages[0]?.durationMs).toBe(1000);
+  });
+});
+
+describe("estimated pricing skips routing aliases", () => {
+  test("does not price Cursor auto from a catalog /auto entry", () => {
+    const catalog = {
+      "github-copilot/auto": { input: 3, output: 15 },
+    };
+    expect(findModelPrice(catalog, "auto", "cursor")).toBeUndefined();
+    const [priced] = applyEstimatedPricing(
+      [
+        makeMessage({
+          client: "cursor",
+          cost: 0,
+          costSource: "unknown",
+          modelId: "auto",
+          providerId: "cursor",
+          sessionId: "cursor-auto",
+          timestamp: Date.parse("2026-01-01T00:00:00Z"),
+          tokens: {
+            cacheRead: 0,
+            cacheWrite: 0,
+            input: 1_000_000,
+            output: 1_000_000,
+            reasoning: 0,
+          },
+        }),
+      ],
+      catalog
+    );
+    expect(priced?.cost).toBe(0);
+    expect(priced?.costSource).toBe("unknown");
   });
 });
