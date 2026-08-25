@@ -354,6 +354,44 @@ describe("gateway API", () => {
     });
   });
 
+  test("serves a unified Cursor and GitHub Copilot provider policy", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const headers = await pairDashboard(app, store);
+    const settings = {
+      copilot: {
+        enabled: true,
+        importDesktop: false,
+        importOtel: true,
+        importVsCode: false,
+        otelExporterFile: "/tmp/copilot.jsonl",
+      },
+      cursor: {
+        enabled: true,
+        includeAutomations: false,
+        includeCloudAgents: true,
+        syncIntervalMs: 120_000,
+        useT3CodeLocalSessions: true,
+      },
+    };
+    const saved = await app.request("/api/v1/settings/providers", {
+      body: JSON.stringify(settings),
+      headers: { ...headers, "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(saved.status).toBe(200);
+
+    const policy = await app.request(
+      "/api/v1/client-provider-policy?deviceId=client-1"
+    );
+    expect(policy.status).toBe(200);
+    expect(await policy.json()).toMatchObject({
+      ...settings,
+      commands: [],
+      cursor: { ...settings.cursor, includeAutomations: true },
+    });
+  });
+
   test("authenticates encrypted ingestion without exposing the key and rejects replays", async () => {
     const store = await testStore();
     const app = createApp(store, "secret");

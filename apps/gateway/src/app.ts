@@ -62,6 +62,17 @@ const cursorDashboardSettingsSchema = z.object({
   t3Home: z.string().max(1024).optional(),
   useT3CodeLocalSessions: z.boolean().optional(),
 });
+const copilotDashboardSettingsSchema = z.object({
+  enabled: z.boolean(),
+  importDesktop: z.boolean(),
+  importOtel: z.boolean(),
+  importVsCode: z.boolean(),
+  otelExporterFile: z.string().max(1024).optional(),
+});
+const providerDashboardSettingsSchema = z.object({
+  copilot: copilotDashboardSettingsSchema,
+  cursor: cursorDashboardSettingsSchema,
+});
 const cursorDeviceStatusSchema = z.object({
   accounts: z
     .array(
@@ -208,7 +219,8 @@ export const createApp = (
       context.req.path === "/api/v1/client-update-policy" ||
       context.req.path === "/api/v1/client-cursor-policy" ||
       context.req.path === "/api/v1/client-cursor-status" ||
-      context.req.path === "/api/v1/client-cursor-commands/ack";
+      context.req.path === "/api/v1/client-cursor-commands/ack" ||
+      context.req.path === "/api/v1/client-provider-policy";
     if (isClientRoute) {
       const encryptedIngestCanAuthenticateItself =
         context.req.path === "/api/v1/ingest";
@@ -319,6 +331,14 @@ export const createApp = (
       useT3CodeLocalSessions: settings.useT3CodeLocalSessions,
     });
   });
+  app.get("/api/v1/client-provider-policy", (context) => {
+    const deviceId = context.req.query("deviceId")?.trim() ?? "";
+    const settings = store.providerDashboardSettings();
+    return context.json({
+      ...settings,
+      commands: deviceId ? store.cursorCommandsForDevice(deviceId) : [],
+    });
+  });
   app.post("/api/v1/client-cursor-status", async (context) => {
     let status: CursorDeviceStatus;
     try {
@@ -355,6 +375,39 @@ export const createApp = (
   app.get("/api/v1/settings/cursor", (context) =>
     context.json(store.cursorDashboardOverview())
   );
+  app.get("/api/v1/settings/providers", (context) =>
+    context.json({
+      ...store.providerDashboardSettings(),
+      devices: store.cursorDashboardOverview().devices,
+    })
+  );
+  app.put("/api/v1/settings/providers", async (context) => {
+    let settings: z.infer<typeof providerDashboardSettingsSchema>;
+    try {
+      settings = providerDashboardSettingsSchema.parse(
+        await context.req.json()
+      );
+    } catch {
+      return context.json({ error: "Invalid provider settings" }, 400);
+    }
+    return context.json(
+      store.setProviderDashboardSettings({
+        copilot: settings.copilot,
+        cursor: {
+          cloudAgentApiKey: settings.cursor.cloudAgentApiKey,
+          enabled: settings.cursor.enabled,
+          includeAutomations: settings.cursor.includeAutomations ?? false,
+          includeCloudAgents: settings.cursor.includeCloudAgents ?? true,
+          syncIntervalMs: clampCursorSyncIntervalMs(
+            settings.cursor.syncIntervalMs
+          ),
+          t3Home: settings.cursor.t3Home,
+          useT3CodeLocalSessions:
+            settings.cursor.useT3CodeLocalSessions ?? false,
+        },
+      })
+    );
+  });
   app.put("/api/v1/settings/cursor", async (context) => {
     let settings: z.infer<typeof cursorDashboardSettingsSchema>;
     try {

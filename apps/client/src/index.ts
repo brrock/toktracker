@@ -87,16 +87,31 @@ let cursorLastSyncAt: number | undefined;
 let cursorCloudAgentWorkspaces: Record<string, string> = {};
 interface CursorIngestPolicy {
   cloudAgentApiKey?: string;
+  enabled: boolean;
   includeAutomations: boolean;
   includeCloudAgents: boolean;
   t3Home?: string;
   useT3CodeLocalSessions: boolean;
 }
+interface CopilotIngestPolicy {
+  enabled: boolean;
+  importDesktop: boolean;
+  importOtel: boolean;
+  importVsCode: boolean;
+  otelExporterFile?: string;
+}
 
 const cursorIngestPolicy: CursorIngestPolicy = {
+  enabled: true,
   includeAutomations: false,
   includeCloudAgents: true,
   useT3CodeLocalSessions: true,
+};
+const copilotIngestPolicy: CopilotIngestPolicy = {
+  enabled: true,
+  importDesktop: true,
+  importOtel: true,
+  importVsCode: true,
 };
 
 const optionalStringSchema = z.string();
@@ -299,8 +314,12 @@ async function discover(): Promise<Source[]> {
   await scan(hermes, "state.db", "hermes");
   await scan(join(hermes, "profiles"), "*/state.db", "hermes");
   const copilot = join(home, ".copilot");
-  await scan(join(copilot, "otel"), "**/*.jsonl", "copilot-otel");
-  await scan(copilot, "data.db", "copilot-desktop");
+  if (copilotIngestPolicy.enabled && copilotIngestPolicy.importOtel) {
+    await scan(join(copilot, "otel"), "**/*.jsonl", "copilot-otel");
+  }
+  if (copilotIngestPolicy.enabled && copilotIngestPolicy.importDesktop) {
+    await scan(copilot, "data.db", "copilot-desktop");
+  }
   const vscodeRoots =
     platform() === "darwin"
       ? [
@@ -323,7 +342,10 @@ async function discover(): Promise<Source[]> {
             ),
           ]
         : [join(home, ".config", "Code", "User", "workspaceStorage")];
-  for (const root of vscodeRoots) {
+  for (const root of copilotIngestPolicy.enabled &&
+  copilotIngestPolicy.importVsCode
+    ? vscodeRoots
+    : []) {
     const glob = new Bun.Glob("*/chatSessions/*.jsonl");
     try {
       for await (const path of glob.scan({
@@ -339,96 +361,108 @@ async function discover(): Promise<Source[]> {
       }
     } catch {}
   }
-  if (process.env.COPILOT_OTEL_EXPORTER_FILE) {
-    add({ kind: "copilot-otel", path: process.env.COPILOT_OTEL_EXPORTER_FILE });
+  const otelExporterFile =
+    copilotIngestPolicy.otelExporterFile ??
+    process.env.COPILOT_OTEL_EXPORTER_FILE;
+  if (
+    copilotIngestPolicy.enabled &&
+    copilotIngestPolicy.importOtel &&
+    otelExporterFile
+  ) {
+    add({ kind: "copilot-otel", path: otelExporterFile });
   }
-  const cursorPaths = resolveCursorPaths(dataDir, home);
-  const existingAccounts = await listCursorAccounts(cursorPaths);
-  try {
-    const cursorSync = await syncCursorUsageCaches(cursorPaths, {
-      freshnessMs: cursorSyncIntervalMs,
-    });
-    const accounts = await listCursorAccounts(cursorPaths);
-    const added = accounts.filter(
-      (account) =>
-        !existingAccounts.some((existing) => existing.id === account.id)
-    );
-    if (added.length > 0) {
-      console.log(
-        `TokTracker: using Cursor desktop auth (${added
-          .map((account) => account.label ?? account.id)
-          .join(", ")})`
+  if (cursorIngestPolicy.enabled) {
+    const cursorPaths = resolveCursorPaths(dataDir, home);
+    const existingAccounts = await listCursorAccounts(cursorPaths);
+    try {
+      const cursorSync = await syncCursorUsageCaches(cursorPaths, {
+        freshnessMs: cursorSyncIntervalMs,
+      });
+      const accounts = await listCursorAccounts(cursorPaths);
+      const added = accounts.filter(
+        (account) =>
+          !existingAccounts.some((existing) => existing.id === account.id)
       );
-    }
-    if (cursorSync.synced) {
-      cursorLastSyncAt = Date.now();
-      cursorLastError = cursorSync.error;
-    } else if (cursorSync.error && !cursorSync.synced) {
-      cursorLastError = cursorSync.error;
-      console.warn(
-        `TokTracker: Cursor usage sync skipped (${cursorSync.error})`
-      );
-    }
-  } catch (error) {
-    cursorLastError = error instanceof Error ? error.message : String(error);
-    console.warn("TokTracker: Cursor usage sync failed", error);
-  }
-  const csvFiles = await listCursorUsageCsvFiles(cursorPaths);
-  const needCursorCsv =
-    !cursorIngestPolicy.useT3CodeLocalSessions ||
-    cursorIngestPolicy.includeCloudAgents ||
-    cursorIngestPolicy.includeAutomations;
-  if (needCursorCsv) {
-    if (cursorIngestPolicy.includeCloudAgents) {
-      const credentials = await cursorCloudAgentApiKeys(cursorPaths);
-      const fallbackKey =
-        (await activeCursorCloudAgentApiKey(cursorPaths)) ??
-        cursorIngestPolicy.cloudAgentApiKey;
-      cursorCloudAgentWorkspaces = {};
-      for (const path of csvFiles) {
-        const accountId = accountIdFromCursorCachePath(path);
-        const apiKey =
-          credentials.keys[
-            accountId === "active" ? credentials.activeAccountId : accountId
-          ] ?? fallbackKey;
-        if (!apiKey) {
-          continue;
-        }
-        const agentIds = listCursorCsvCloudAgentIds(
-          await Bun.file(path).text()
+      if (added.length > 0) {
+        console.log(
+          `TokTracker: using Cursor desktop auth (${added
+            .map((account) => account.label ?? account.id)
+            .join(", ")})`
         );
-        try {
-          const workspaces = await fetchCloudAgentWorkspaces(agentIds, {
-            apiKey,
-            cachePath: join(
-              cursorPaths.cacheDir,
-              `cloud-agent-workspaces.${accountId}.json`
-            ),
-          });
-          Object.assign(cursorCloudAgentWorkspaces, workspaces);
-          cursorDebug("Cloud Agents lookup finished", {
-            accountId,
-            workspaceCount: Object.keys(workspaces).length,
-          });
-        } catch (error) {
-          cursorDebug("Cloud Agents lookup failed", {
-            accountId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
       }
-    } else {
-      cursorCloudAgentWorkspaces = {};
+      if (cursorSync.synced) {
+        cursorLastSyncAt = Date.now();
+        cursorLastError = cursorSync.error;
+      } else if (cursorSync.error && !cursorSync.synced) {
+        cursorLastError = cursorSync.error;
+        console.warn(
+          `TokTracker: Cursor usage sync skipped (${cursorSync.error})`
+        );
+      }
+    } catch (error) {
+      cursorLastError = error instanceof Error ? error.message : String(error);
+      console.warn("TokTracker: Cursor usage sync failed", error);
     }
-    for (const path of csvFiles) {
-      add({ kind: "cursor", path });
+    const csvFiles = await listCursorUsageCsvFiles(cursorPaths);
+    const needCursorCsv =
+      !cursorIngestPolicy.useT3CodeLocalSessions ||
+      cursorIngestPolicy.includeCloudAgents ||
+      cursorIngestPolicy.includeAutomations;
+    if (needCursorCsv) {
+      if (cursorIngestPolicy.includeCloudAgents) {
+        const credentials = await cursorCloudAgentApiKeys(cursorPaths);
+        const fallbackKey =
+          (await activeCursorCloudAgentApiKey(cursorPaths)) ??
+          cursorIngestPolicy.cloudAgentApiKey;
+        cursorCloudAgentWorkspaces = {};
+        for (const path of csvFiles) {
+          const accountId = accountIdFromCursorCachePath(path);
+          const apiKey =
+            credentials.keys[
+              accountId === "active" ? credentials.activeAccountId : accountId
+            ] ?? fallbackKey;
+          if (!apiKey) {
+            continue;
+          }
+          const agentIds = listCursorCsvCloudAgentIds(
+            await Bun.file(path).text()
+          );
+          try {
+            const workspaces = await fetchCloudAgentWorkspaces(agentIds, {
+              apiKey,
+              cachePath: join(
+                cursorPaths.cacheDir,
+                `cloud-agent-workspaces.${accountId}.json`
+              ),
+            });
+            Object.assign(cursorCloudAgentWorkspaces, workspaces);
+            cursorDebug("Cloud Agents lookup finished", {
+              accountId,
+              workspaceCount: Object.keys(workspaces).length,
+            });
+          } catch (error) {
+            cursorDebug("Cloud Agents lookup failed", {
+              accountId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
+        }
+      } else {
+        cursorCloudAgentWorkspaces = {};
+      }
+      for (const path of csvFiles) {
+        add({ kind: "cursor", path });
+      }
     }
-  }
-  if (cursorIngestPolicy.useT3CodeLocalSessions) {
-    const t3Files = listT3CodeStateSqliteFiles(home, cursorIngestPolicy.t3Home);
-    cursorDebug("T3 Code discovery", { databaseCount: t3Files.length });
-    for (const path of t3Files) {
-      add({ kind: "t3code-cursor", path });
+    if (cursorIngestPolicy.useT3CodeLocalSessions) {
+      const t3Files = listT3CodeStateSqliteFiles(
+        home,
+        cursorIngestPolicy.t3Home
+      );
+      cursorDebug("T3 Code discovery", { databaseCount: t3Files.length });
+      for (const path of t3Files) {
+        add({ kind: "t3code-cursor", path });
+      }
     }
   }
   const openclawRoots = [
@@ -948,11 +982,11 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
   }
 };
 
-const cursorDashboardEnabled = (): boolean =>
+const gatewayProviderSettingsEnabled = (): boolean =>
+  process.env.TOKTRACKER_GATEWAY_PROVIDER_SETTINGS !== "0" &&
   process.env.TOKTRACKER_CURSOR_DASHBOARD !== "0";
 
-const cursorClientPolicySchema = z.object({
-  cloudAgentApiKey: z.string().optional(),
+const providerClientPolicySchema = z.object({
   commands: z.array(
     z.object({
       accountId: z.string().optional(),
@@ -963,11 +997,22 @@ const cursorClientPolicySchema = z.object({
       type: z.string(),
     })
   ),
-  includeAutomations: z.boolean().optional(),
-  includeCloudAgents: z.boolean().optional(),
-  syncIntervalMs: z.number().finite().positive(),
-  t3Home: z.string().optional(),
-  useT3CodeLocalSessions: z.boolean().optional(),
+  copilot: z.object({
+    enabled: z.boolean(),
+    importDesktop: z.boolean(),
+    importOtel: z.boolean(),
+    importVsCode: z.boolean(),
+    otelExporterFile: z.string().optional(),
+  }),
+  cursor: z.object({
+    cloudAgentApiKey: z.string().optional(),
+    enabled: z.boolean().optional(),
+    includeAutomations: z.boolean().optional(),
+    includeCloudAgents: z.boolean().optional(),
+    syncIntervalMs: z.number().finite().positive(),
+    t3Home: z.string().optional(),
+    useT3CodeLocalSessions: z.boolean().optional(),
+  }),
 });
 
 const gatewayHeaders = (): Headers => {
@@ -979,8 +1024,8 @@ const gatewayHeaders = (): Headers => {
   return headers;
 };
 
-const applyCursorCommands = async (): Promise<void> => {
-  if (!cursorDashboardEnabled()) {
+const applyProviderSettings = async (): Promise<void> => {
+  if (!gatewayProviderSettingsEnabled()) {
     return;
   }
   const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
@@ -989,7 +1034,7 @@ const applyCursorCommands = async (): Promise<void> => {
   const cursorPaths = resolveCursorPaths(dataDir, home);
   try {
     const policyResponse = await fetch(
-      `${endpoint}/api/v1/client-cursor-policy?deviceId=${encodeURIComponent(deviceId!)}`,
+      `${endpoint}/api/v1/client-provider-policy?deviceId=${encodeURIComponent(deviceId!)}`,
       {
         headers: gatewayHeaders(),
         signal: AbortSignal.timeout(5000),
@@ -1002,20 +1047,28 @@ const applyCursorCommands = async (): Promise<void> => {
       });
       return;
     }
-    const policy = cursorClientPolicySchema.parse(await policyResponse.json());
+    const policy = providerClientPolicySchema.parse(
+      await policyResponse.json()
+    );
     cursorDebug("policy received", {
-      apiKeyConfigured: Boolean(policy.cloudAgentApiKey?.trim()),
+      apiKeyConfigured: Boolean(policy.cursor.cloudAgentApiKey?.trim()),
       commandTypes: policy.commands.map((command) => command.type),
-      syncIntervalMs: policy.syncIntervalMs,
+      syncIntervalMs: policy.cursor.syncIntervalMs,
     });
-    cursorSyncIntervalMs = clampCursorSyncIntervalMs(policy.syncIntervalMs);
+    cursorSyncIntervalMs = clampCursorSyncIntervalMs(
+      policy.cursor.syncIntervalMs
+    );
     cursorIngestPolicy.cloudAgentApiKey =
-      policy.cloudAgentApiKey?.trim() || undefined;
-    cursorIngestPolicy.includeAutomations = policy.includeAutomations ?? false;
-    cursorIngestPolicy.includeCloudAgents = policy.includeCloudAgents ?? false;
-    cursorIngestPolicy.t3Home = policy.t3Home?.trim() || undefined;
+      policy.cursor.cloudAgentApiKey?.trim() || undefined;
+    cursorIngestPolicy.enabled = policy.cursor.enabled ?? true;
+    cursorIngestPolicy.includeAutomations =
+      policy.cursor.includeAutomations ?? false;
+    cursorIngestPolicy.includeCloudAgents =
+      policy.cursor.includeCloudAgents ?? false;
+    cursorIngestPolicy.t3Home = policy.cursor.t3Home?.trim() || undefined;
     cursorIngestPolicy.useT3CodeLocalSessions =
-      policy.useT3CodeLocalSessions ?? true;
+      policy.cursor.useT3CodeLocalSessions ?? true;
+    Object.assign(copilotIngestPolicy, policy.copilot);
     const acknowledged: string[] = [];
     for (const command of policy.commands) {
       try {
@@ -1103,7 +1156,7 @@ const applyCursorCommands = async (): Promise<void> => {
 };
 
 const reportCursorStatus = async (): Promise<void> => {
-  if (!cursorDashboardEnabled()) {
+  if (!gatewayProviderSettingsEnabled()) {
     return;
   }
   const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
@@ -1166,7 +1219,7 @@ const planIsCurrent = async (plan: SyncPlan): Promise<boolean> => {
 
 async function sync() {
   await applyGatewayUpdatePolicy();
-  await applyCursorCommands();
+  await applyProviderSettings();
   const plan = await changedSessions();
   await reportCursorStatus();
   const mustContactGateway =
