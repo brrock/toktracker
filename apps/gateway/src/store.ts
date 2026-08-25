@@ -13,7 +13,10 @@ import type {
 } from "@toktracker/shared";
 import {
   canonicalModelId,
+  clampCursorSyncIntervalMs,
+  DEFAULT_CURSOR_SYNC_INTERVAL_MS,
   isHermesMessage,
+  projectLabel,
   summarize,
   totalTokens,
 } from "@toktracker/token-calc";
@@ -60,6 +63,70 @@ export interface ClientAutoUpdateSettings {
   windowStartHour: number;
 }
 
+export interface CursorAccountStatus {
+  cloudAgentApiKeyConfigured?: boolean;
+  id: string;
+  isActive: boolean;
+  label?: string;
+}
+
+export interface CursorDeviceStatus {
+  accounts: CursorAccountStatus[];
+  desktopEmail?: string;
+  desktopSignedIn: boolean;
+  deviceId: string;
+  lastError?: string;
+  lastSyncAt?: number;
+  syncIntervalMs: number;
+}
+
+export type CursorDeviceCommand =
+  | { accountId: string; id: string; type: "remove-account" }
+  | { accountId: string; id: string; type: "switch-account" }
+  | {
+      cloudAgentApiKey?: string;
+      id: string;
+      label?: string;
+      token: string;
+      type: "add-account";
+    }
+  | {
+      accountId: string;
+      cloudAgentApiKey: string;
+      id: string;
+      type: "set-api-key";
+    }
+  | { id: string; type: "import-desktop" };
+
+export type CursorCommandDraft =
+  | { accountId: string; type: "remove-account" }
+  | { accountId: string; type: "switch-account" }
+  | {
+      cloudAgentApiKey?: string;
+      label?: string;
+      token: string;
+      type: "add-account";
+    }
+  | { accountId: string; cloudAgentApiKey: string; type: "set-api-key" }
+  | { type: "import-desktop" };
+
+export interface CursorDashboardSettings {
+  cloudAgentApiKey?: string;
+  enabled: boolean;
+  includeAutomations: boolean;
+  includeCloudAgents: boolean;
+  syncIntervalMs: number;
+  t3Home?: string;
+  useT3CodeLocalSessions: boolean;
+}
+
+export interface CursorDashboardOverview extends CursorDashboardSettings {
+  devices: (CursorDeviceStatus & {
+    name?: string;
+    updatedAt: number;
+  })[];
+}
+
 const clientAutoUpdateSettingsSchema: z.ZodType<ClientAutoUpdateSettings> =
   z.object({
     channel: z.enum(["stable", "nightly"]),
@@ -74,6 +141,109 @@ const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
   windowEndHour: 4,
   windowStartHour: 2,
 };
+
+const cursorAccountStatusSchema = z.object({
+  cloudAgentApiKeyConfigured: z.boolean().optional(),
+  id: z.string().trim().min(1).max(128),
+  isActive: z.boolean(),
+  label: z.string().trim().max(128).optional(),
+});
+const cursorDeviceStatusSchema: z.ZodType<
+  Omit<CursorDeviceStatus, "deviceId">
+> = z.object({
+  accounts: z.array(cursorAccountStatusSchema).max(50),
+  desktopEmail: z.string().trim().max(320).optional(),
+  desktopSignedIn: z.boolean(),
+  lastError: z.string().trim().max(1024).optional(),
+  lastSyncAt: z.number().int().safe().nonnegative().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+});
+const storedCursorDeviceStatusSchema: z.ZodType<CursorDeviceStatus> = z.object({
+  accounts: z.array(cursorAccountStatusSchema).max(50),
+  desktopEmail: z.string().trim().max(320).optional(),
+  desktopSignedIn: z.boolean(),
+  deviceId: z.string().trim().min(1).max(128),
+  lastError: z.string().trim().max(1024).optional(),
+  lastSyncAt: z.number().int().safe().nonnegative().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+});
+const cursorDashboardSettingsSchema = z.object({
+  cloudAgentApiKey: z.string().max(512).optional(),
+  enabled: z.boolean(),
+  includeAutomations: z.boolean().optional(),
+  includeCloudAgents: z.boolean().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+  t3Home: z.string().max(1024).optional(),
+  useT3CodeLocalSessions: z.boolean().optional(),
+});
+const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
+  z.discriminatedUnion("type", [
+    z.object({
+      id: z.string().min(1),
+      type: z.literal("import-desktop"),
+    }),
+    z.object({
+      cloudAgentApiKey: z.string().max(512).optional(),
+      id: z.string().min(1),
+      label: z.string().max(128).optional(),
+      token: z.string().min(1).max(8192),
+      type: z.literal("add-account"),
+    }),
+    z.object({
+      accountId: z.string().min(1).max(128),
+      cloudAgentApiKey: z.string().min(1).max(512),
+      id: z.string().min(1),
+      type: z.literal("set-api-key"),
+    }),
+    z.object({
+      accountId: z.string().min(1).max(128),
+      id: z.string().min(1),
+      type: z.literal("remove-account"),
+    }),
+    z.object({
+      accountId: z.string().min(1).max(128),
+      id: z.string().min(1),
+      type: z.literal("switch-account"),
+    }),
+  ]);
+const DEFAULT_CURSOR_DASHBOARD_SETTINGS: CursorDashboardSettings = {
+  enabled: true,
+  includeAutomations: false,
+  includeCloudAgents: true,
+  syncIntervalMs: DEFAULT_CURSOR_SYNC_INTERVAL_MS,
+  useT3CodeLocalSessions: true,
+};
+
+const optionalTrimmed = (value: string | undefined): string | undefined => {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+};
+
+const normalizeCursorDashboardSettings = (
+  input: z.infer<typeof cursorDashboardSettingsSchema>,
+  previous?: CursorDashboardSettings
+): CursorDashboardSettings => ({
+  cloudAgentApiKey:
+    input.cloudAgentApiKey === undefined
+      ? previous?.cloudAgentApiKey
+      : optionalTrimmed(input.cloudAgentApiKey),
+  enabled: input.enabled,
+  includeAutomations: input.useT3CodeLocalSessions
+    ? true
+    : (input.includeAutomations ??
+      previous?.includeAutomations ??
+      DEFAULT_CURSOR_DASHBOARD_SETTINGS.includeAutomations),
+  includeCloudAgents: true,
+  syncIntervalMs: clampCursorSyncIntervalMs(input.syncIntervalMs),
+  t3Home:
+    input.t3Home === undefined
+      ? previous?.t3Home
+      : optionalTrimmed(input.t3Home),
+  useT3CodeLocalSessions:
+    input.useT3CodeLocalSessions ??
+    previous?.useT3CodeLocalSessions ??
+    DEFAULT_CURSOR_DASHBOARD_SETTINGS.useT3CodeLocalSessions,
+});
 
 interface StoredSessionRow {
   device_id: string;
@@ -205,11 +375,13 @@ const matchesSessionQuery = (
 };
 
 const sessionProject = (messages: UsageMessage[]): string => {
-  const projectMessage = messages.find((message) => !isHermesMessage(message));
-  if (!projectMessage) {
-    return "No project";
+  for (const message of messages) {
+    const project = projectLabel(message);
+    if (project) {
+      return project;
+    }
   }
-  return projectMessage.workspaceLabel ?? "Unknown project";
+  return "No project";
 };
 
 const messageFromRow = (row: StoredUsageRow): UsageMessage => ({
@@ -249,10 +421,11 @@ const addTokens = (total: TokenBreakdown, next: TokenBreakdown): void => {
 const sessionParts = (messages: UsageMessage[]): SessionUsagePart[] => {
   const parts: SessionUsagePart[] = [];
   for (const message of messages) {
+    const model = canonicalModelId(message.modelId);
     const previous = parts.at(-1);
     if (
       previous &&
-      previous.model === message.modelId &&
+      previous.model === model &&
       previous.provider === message.providerId
     ) {
       addTokens(previous.tokens, message.tokens);
@@ -268,7 +441,7 @@ const sessionParts = (messages: UsageMessage[]): SessionUsagePart[] => {
       cost: message.cost,
       lastSeen: message.timestamp + (message.durationMs ?? 0),
       messages: message.messageCount,
-      model: message.modelId,
+      model,
       provider: message.providerId,
       startedAt: message.timestamp,
       tokens: { ...message.tokens },
@@ -312,6 +485,9 @@ export class Store {
       CREATE TABLE IF NOT EXISTS gateway_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS ingestion_requests (device_id TEXT NOT NULL, request_id TEXT NOT NULL, received_at INTEGER NOT NULL, PRIMARY KEY(device_id,request_id));
       CREATE INDEX IF NOT EXISTS ingestion_requests_received_at ON ingestion_requests(received_at);
+      CREATE TABLE IF NOT EXISTS cursor_device_status (device_id TEXT PRIMARY KEY, updated_at INTEGER NOT NULL, status TEXT NOT NULL);
+      CREATE TABLE IF NOT EXISTS cursor_device_commands (id TEXT PRIMARY KEY, device_id TEXT NOT NULL, created_at INTEGER NOT NULL, command TEXT NOT NULL);
+      CREATE INDEX IF NOT EXISTS cursor_device_commands_device ON cursor_device_commands(device_id);
     `);
     // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const deviceColumns = this.db.query("PRAGMA table_info(devices)").all() as {
@@ -571,6 +747,149 @@ export class Store {
     return settings;
   }
 
+  cursorDashboardSettings(): CursorDashboardSettings {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const row = this.db
+      .query("SELECT value FROM gateway_settings WHERE key='cursor_dashboard'")
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .get() as { value: string } | null;
+    if (!row) {
+      return { ...DEFAULT_CURSOR_DASHBOARD_SETTINGS };
+    }
+    try {
+      const parsed = cursorDashboardSettingsSchema.safeParse(
+        JSON.parse(row.value)
+      );
+      if (parsed.success) {
+        return normalizeCursorDashboardSettings(parsed.data);
+      }
+    } catch {
+      // Invalid persisted settings fall back to the enabled default.
+    }
+    return { ...DEFAULT_CURSOR_DASHBOARD_SETTINGS };
+  }
+
+  setCursorDashboardSettings(
+    settings: CursorDashboardSettings
+  ): CursorDashboardSettings {
+    const next = normalizeCursorDashboardSettings(settings);
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('cursor_dashboard',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(next));
+    return next;
+  }
+
+  recordCursorDeviceStatus(status: CursorDeviceStatus): CursorDeviceStatus {
+    const body = cursorDeviceStatusSchema.parse({
+      accounts: status.accounts,
+      desktopEmail: status.desktopEmail,
+      desktopSignedIn: status.desktopSignedIn,
+      lastError: status.lastError,
+      lastSyncAt: status.lastSyncAt,
+      syncIntervalMs: clampCursorSyncIntervalMs(status.syncIntervalMs),
+    });
+    const stored: CursorDeviceStatus = { ...body, deviceId: status.deviceId };
+    this.db
+      .query(
+        "INSERT INTO cursor_device_status(device_id,updated_at,status) VALUES(?,?,?) ON CONFLICT(device_id) DO UPDATE SET updated_at=excluded.updated_at,status=excluded.status"
+      )
+      .run(status.deviceId, Date.now(), JSON.stringify(stored));
+    return stored;
+  }
+
+  enqueueCursorCommand(
+    deviceId: string,
+    command: CursorCommandDraft
+  ): CursorDeviceCommand {
+    const queued = cursorDeviceCommandSchema.parse({
+      ...command,
+      id: crypto.randomUUID(),
+    });
+    this.db
+      .query(
+        "INSERT INTO cursor_device_commands(id,device_id,created_at,command) VALUES(?,?,?,?)"
+      )
+      .run(queued.id, deviceId, Date.now(), JSON.stringify(queued));
+    return queued;
+  }
+
+  cursorCommandsForDevice(deviceId: string): CursorDeviceCommand[] {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const rows = this.db
+      .query(
+        "SELECT command FROM cursor_device_commands WHERE device_id=? ORDER BY created_at"
+      )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .all(deviceId) as { command: string }[];
+    const commands: CursorDeviceCommand[] = [];
+    for (const row of rows) {
+      try {
+        const parsed = cursorDeviceCommandSchema.safeParse(
+          JSON.parse(row.command)
+        );
+        if (parsed.success) {
+          commands.push(parsed.data);
+        }
+      } catch {
+        // Skip malformed command payloads.
+      }
+    }
+    return commands;
+  }
+
+  ackCursorCommands(deviceId: string, commandIds: string[]): number {
+    let removed = 0;
+    const statement = this.db.query(
+      "DELETE FROM cursor_device_commands WHERE device_id=? AND id=?"
+    );
+    for (const commandId of commandIds) {
+      removed += statement.run(deviceId, commandId).changes;
+    }
+    return removed;
+  }
+
+  cursorDashboardOverview(): CursorDashboardOverview {
+    const settings = this.cursorDashboardSettings();
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const names = new Map(
+      (
+        this.db
+          .query("SELECT id,name FROM devices")
+          // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+          .all() as { id: string; name: string }[]
+      ).map((device) => [device.id, device.name])
+    );
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const rows = this.db
+      .query(
+        "SELECT device_id as deviceId, updated_at as updatedAt, status FROM cursor_device_status ORDER BY updated_at DESC"
+      )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .all() as { deviceId: string; status: string; updatedAt: number }[];
+    const devices: CursorDashboardOverview["devices"] = [];
+    for (const row of rows) {
+      try {
+        const parsed = storedCursorDeviceStatusSchema.safeParse(
+          JSON.parse(row.status)
+        );
+        if (!parsed.success) {
+          continue;
+        }
+        devices.push({
+          ...parsed.data,
+          deviceId: row.deviceId,
+          name: names.get(row.deviceId),
+          updatedAt: row.updatedAt,
+        });
+      } catch {
+        // Skip malformed status payloads.
+      }
+    }
+    return { ...settings, devices };
+  }
+
   ingest(payload: IngestRequest) {
     const now = Date.now();
     if (
@@ -776,12 +1095,9 @@ export class Store {
       if (totalTokens(message.tokens) > 0) {
         appendGroup(byModel, canonicalModelId(message.modelId), message);
       }
-      if (!isHermesMessage(message)) {
-        appendGroup(
-          byProject,
-          message.workspaceLabel ?? "Unknown project",
-          message
-        );
+      const project = projectLabel(message);
+      if (project) {
+        appendGroup(byProject, project, message);
       }
     }
     const agentDetails = summarizeGroups(byAgent);
@@ -800,8 +1116,9 @@ export class Store {
           deviceId: identity.deviceId,
           id,
           lastSeen: Math.max(...list.map((message) => message.timestamp)),
-          model:
-            list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown",
+          model: canonicalModelId(
+            list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown"
+          ),
           project: sessionProject(list),
           sessionId: identity.sessionId,
           sourcePath: identity.sourcePath,
@@ -941,6 +1258,7 @@ export class Store {
     const id = sessionApiId(identity);
     const key = `${row.device_id}\u0000${row.source_path}\u0000${row.session_id}`;
     const list = this.usageForSessions([row]).get(key) ?? [];
+    const topModel = list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId;
     const summary: SessionSummary = {
       client: list[0]?.client ?? "unknown",
       cost: list.reduce((value, message) => value + message.cost, 0),
@@ -953,7 +1271,7 @@ export class Store {
         0,
         ...list.map((message) => message.timestamp + (message.durationMs ?? 0))
       ),
-      model: list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown",
+      model: topModel ? canonicalModelId(topModel) : "unknown",
       project: sessionProject(list),
       sessionId: identity.sessionId,
       sourcePath: identity.sourcePath,

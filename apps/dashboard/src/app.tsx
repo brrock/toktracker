@@ -23,6 +23,7 @@ import { AUTH_REQUIRED_EVENT, apiFetch } from "@/lib/api";
 import { EMPTY_SUMMARY } from "@/lib/dashboard";
 import { Link, NAV_ITEMS } from "@/lib/navigation";
 import { dashboardSummarySchema, timeRangeSchema } from "@/lib/schemas";
+import { parseSettingsPath } from "@/lib/settings-path";
 import { AgentPage, AgentsPage } from "@/pages/agents-page";
 import { ModelPage } from "@/pages/model-page";
 import { OverviewPage } from "@/pages/overview-page";
@@ -45,12 +46,11 @@ const App = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
   const navigate = useNavigate();
-  const pathSegments = location.pathname.split("/");
-  const settingsSection = pathSegments.at(2);
-  const settingsOpen =
-    settingsSection === "general" ||
-    settingsSection === "devices" ||
-    settingsSection === "export";
+  const {
+    isSettingsPath,
+    section: settingsSection,
+    settingsOpen,
+  } = parseSettingsPath(location.pathname);
   const requestedRange = searchParams.get("range");
   const parsedRange = timeRangeSchema.safeParse(requestedRange);
   const range: TimeRange = parsedRange.success ? parsedRange.data : "month";
@@ -183,6 +183,64 @@ const App = () => {
       pageTitle === "TokTracker" ? pageTitle : `${pageTitle} | TokTracker`;
   }, [pageTitle]);
 
+  let mainContent: React.ReactNode;
+  if (loading) {
+    mainContent = <EmptyState>Loading usage…</EmptyState>;
+  } else if (isSettingsPath && settingsSection === undefined) {
+    mainContent = <Navigate replace to="/settings/general" />;
+  } else if (settingsOpen) {
+    mainContent = (
+      <SettingsPage
+        data={data}
+        section={settingsSection ?? "general"}
+        sessionSort={sessionSort}
+        setSessionSort={setSessionSort}
+      />
+    );
+  } else {
+    mainContent = (
+      <Routes>
+        <Route
+          path="/"
+          element={
+            <OverviewPage
+              data={overviewData}
+              range={range}
+              setRange={(nextRange) => updateSearchParam("range", nextRange)}
+            />
+          }
+        />
+        <Route path="/agents" element={<AgentsPage data={data} query="" />} />
+        <Route path="/agents/:agentName" element={<AgentPage data={data} />} />
+        <Route
+          path="/projects"
+          element={<ProjectsPage data={data} query="" />}
+        />
+        <Route
+          path="/projects/:projectName"
+          element={<ProjectPage data={data} />}
+        />
+        <Route path="/models/:modelName" element={<ModelPage data={data} />} />
+        <Route
+          path="/sessions"
+          element={
+            <SessionsPage
+              data={data}
+              deviceParam={deviceParam}
+              query=""
+              sessionSort={sessionSort}
+            />
+          }
+        />
+        <Route
+          path="/sessions/:sessionId"
+          element={<SessionPage data={data} deviceParam={deviceParam} />}
+        />
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-background text-foreground">
       {authRequired && <PairingDialog />}
@@ -256,80 +314,7 @@ const App = () => {
           )}
         </header>
         <Navigation data={data} mobile />
-        <div className="mx-auto max-w-[1600px] p-4 md:p-6">
-          {loading ? (
-            <EmptyState>Loading usage…</EmptyState>
-          ) : (
-            <>
-              {settingsOpen && (
-                <SettingsPage
-                  data={data}
-                  section={settingsSection ?? "general"}
-                  sessionSort={sessionSort}
-                  setSessionSort={setSessionSort}
-                />
-              )}
-              {!settingsOpen && (
-                <Routes>
-                  <Route
-                    path="/"
-                    element={
-                      <OverviewPage
-                        data={overviewData}
-                        range={range}
-                        setRange={(nextRange) =>
-                          updateSearchParam("range", nextRange)
-                        }
-                      />
-                    }
-                  />
-                  <Route
-                    path="/agents"
-                    element={<AgentsPage data={data} query="" />}
-                  />
-                  <Route
-                    path="/agents/:agentName"
-                    element={<AgentPage data={data} />}
-                  />
-                  <Route
-                    path="/projects"
-                    element={<ProjectsPage data={data} query="" />}
-                  />
-                  <Route
-                    path="/projects/:projectName"
-                    element={<ProjectPage data={data} />}
-                  />
-                  <Route
-                    path="/models/:modelName"
-                    element={<ModelPage data={data} />}
-                  />
-                  <Route
-                    path="/sessions"
-                    element={
-                      <SessionsPage
-                        data={data}
-                        deviceParam={deviceParam}
-                        query=""
-                        sessionSort={sessionSort}
-                      />
-                    }
-                  />
-                  <Route
-                    path="/sessions/:sessionId"
-                    element={
-                      <SessionPage data={data} deviceParam={deviceParam} />
-                    }
-                  />
-                  <Route
-                    path="/settings"
-                    element={<Navigate to="/settings/general" replace />}
-                  />
-                  <Route path="*" element={<Navigate to="/" replace />} />
-                </Routes>
-              )}
-            </>
-          )}
-        </div>
+        <div className="mx-auto max-w-[1600px] p-4 md:p-6">{mainContent}</div>
       </main>
     </div>
   );

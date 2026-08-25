@@ -23,6 +23,9 @@ export function inferProvider(model: string): string | undefined {
   if (/mistral|codestral/.test(id)) {
     return "mistral";
   }
+  if (/llama|meta/.test(id)) {
+    return "meta";
+  }
   return undefined;
 }
 

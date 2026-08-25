@@ -60,7 +60,11 @@ export const ProjectsPage = ({
         ))}
       </div>
       {!projects.length && (
-        <EmptyState>No projects match your search.</EmptyState>
+        <EmptyState>
+          {query
+            ? "No projects match your search."
+            : "No workspace-backed usage yet."}
+        </EmptyState>
       )}
     </PageHeading>
   );

@@ -1,4 +1,4 @@
-/* eslint-disable func-style, no-await-in-loop, no-empty, no-nested-ternary, promise/prefer-await-to-then, require-unicode-regexp, sort-vars, typescript/no-non-null-assertion, unicorn/import-style */
+/* eslint-disable complexity, func-style, no-await-in-loop, no-empty, no-nested-ternary, promise/prefer-await-to-then, require-unicode-regexp, sort-vars, typescript/no-non-null-assertion, unicorn/import-style */
 // Source scans are deliberately sequential to bound memory and open-file usage.
 import { Database } from "bun:sqlite";
 import { mkdir } from "node:fs/promises";
@@ -15,18 +15,39 @@ import type {
 } from "@toktracker/shared";
 import type { PriceCatalog } from "@toktracker/token-calc";
 import {
+  accountIdFromCursorCachePath,
+  activeCursorCloudAgentApiKey,
   applyEstimatedPricing,
+  cursorCloudAgentApiKeys,
+  clampCursorSyncIntervalMs,
+  DEFAULT_CURSOR_SYNC_INTERVAL_MS,
+  fetchCloudAgentWorkspaces,
+  importDesktopCursorAccounts,
+  listCursorAccounts,
+  listCursorCsvCloudAgentIds,
+  listCursorUsageCsvFiles,
+  listT3CodeStateSqliteFiles,
   parseClaude,
   parseCodex,
   parseCopilotDesktopSqlite,
   parseCopilotOtel,
   parseCopilotVsCode,
+  parseCursorCsv,
   parseHermesSqlite,
   parseLiteLlmCatalog,
+  parseModelsDevCatalog,
+  parseOpenClaw,
   parseOpenCodeJson,
   parseOpenCodeSqlite,
   parsePi,
-  parseModelsDevCatalog,
+  parseT3CodeCursorSqlite,
+  readDesktopCursorSessions,
+  removeCursorAccount,
+  resolveCursorPaths,
+  setActiveCursorAccount,
+  setCursorCloudAgentApiKey,
+  syncCursorUsageCaches,
+  upsertCursorAccount,
 } from "@toktracker/token-calc";
 import { z } from "zod";
 
@@ -34,9 +55,9 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Version 4 forces a complete source replacement so gateways heal rows that
-// older clients allowed the normalized store to compact.
-const INDEX_SCHEMA_VERSION = 4;
+// Version 12 recalculates all Cursor rows at public API token prices rather
+// than using Cursor's subscription-specific CSV cost.
+const INDEX_SCHEMA_VERSION = 12;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
@@ -46,6 +67,37 @@ const MAX_BATCH_MESSAGES = 100_000;
 const MAX_BATCH_SOURCE_UPDATES = 10_000;
 const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+type CursorDebugDetails = Record<
+  string,
+  boolean | number | string | string[] | undefined
+>;
+const cursorDebug = (event: string, details: CursorDebugDetails): void => {
+  if (process.env.TOKTRACKER_DEV === "1") {
+    console.info(`TokTracker: Cursor ${event}`, details);
+  }
+};
+let cursorSyncIntervalMs = clampCursorSyncIntervalMs(
+  Number(
+    process.env.TOKTRACKER_CURSOR_SYNC_INTERVAL_MS ??
+      DEFAULT_CURSOR_SYNC_INTERVAL_MS
+  )
+);
+let cursorLastError: string | undefined;
+let cursorLastSyncAt: number | undefined;
+let cursorCloudAgentWorkspaces: Record<string, string> = {};
+interface CursorIngestPolicy {
+  cloudAgentApiKey?: string;
+  includeAutomations: boolean;
+  includeCloudAgents: boolean;
+  t3Home?: string;
+  useT3CodeLocalSessions: boolean;
+}
+
+const cursorIngestPolicy: CursorIngestPolicy = {
+  includeAutomations: false,
+  includeCloudAgents: true,
+  useT3CodeLocalSessions: true,
+};
 
 const optionalStringSchema = z.string();
 const historyRowSchema = z.record(z.string(), z.json());
@@ -290,6 +342,105 @@ async function discover(): Promise<Source[]> {
   if (process.env.COPILOT_OTEL_EXPORTER_FILE) {
     add({ kind: "copilot-otel", path: process.env.COPILOT_OTEL_EXPORTER_FILE });
   }
+  const cursorPaths = resolveCursorPaths(dataDir, home);
+  const existingAccounts = await listCursorAccounts(cursorPaths);
+  try {
+    const cursorSync = await syncCursorUsageCaches(cursorPaths, {
+      freshnessMs: cursorSyncIntervalMs,
+    });
+    const accounts = await listCursorAccounts(cursorPaths);
+    const added = accounts.filter(
+      (account) =>
+        !existingAccounts.some((existing) => existing.id === account.id)
+    );
+    if (added.length > 0) {
+      console.log(
+        `TokTracker: using Cursor desktop auth (${added
+          .map((account) => account.label ?? account.id)
+          .join(", ")})`
+      );
+    }
+    if (cursorSync.synced) {
+      cursorLastSyncAt = Date.now();
+      cursorLastError = cursorSync.error;
+    } else if (cursorSync.error && !cursorSync.synced) {
+      cursorLastError = cursorSync.error;
+      console.warn(
+        `TokTracker: Cursor usage sync skipped (${cursorSync.error})`
+      );
+    }
+  } catch (error) {
+    cursorLastError = error instanceof Error ? error.message : String(error);
+    console.warn("TokTracker: Cursor usage sync failed", error);
+  }
+  const csvFiles = await listCursorUsageCsvFiles(cursorPaths);
+  const needCursorCsv =
+    !cursorIngestPolicy.useT3CodeLocalSessions ||
+    cursorIngestPolicy.includeCloudAgents ||
+    cursorIngestPolicy.includeAutomations;
+  if (needCursorCsv) {
+    if (cursorIngestPolicy.includeCloudAgents) {
+      const credentials = await cursorCloudAgentApiKeys(cursorPaths);
+      const fallbackKey =
+        (await activeCursorCloudAgentApiKey(cursorPaths)) ??
+        cursorIngestPolicy.cloudAgentApiKey;
+      cursorCloudAgentWorkspaces = {};
+      for (const path of csvFiles) {
+        const accountId = accountIdFromCursorCachePath(path);
+        const apiKey =
+          credentials.keys[
+            accountId === "active" ? credentials.activeAccountId : accountId
+          ] ?? fallbackKey;
+        if (!apiKey) {
+          continue;
+        }
+        const agentIds = listCursorCsvCloudAgentIds(
+          await Bun.file(path).text()
+        );
+        try {
+          const workspaces = await fetchCloudAgentWorkspaces(agentIds, {
+            apiKey,
+            cachePath: join(
+              cursorPaths.cacheDir,
+              `cloud-agent-workspaces.${accountId}.json`
+            ),
+          });
+          Object.assign(cursorCloudAgentWorkspaces, workspaces);
+          cursorDebug("Cloud Agents lookup finished", {
+            accountId,
+            workspaceCount: Object.keys(workspaces).length,
+          });
+        } catch (error) {
+          cursorDebug("Cloud Agents lookup failed", {
+            accountId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      }
+    } else {
+      cursorCloudAgentWorkspaces = {};
+    }
+    for (const path of csvFiles) {
+      add({ kind: "cursor", path });
+    }
+  }
+  if (cursorIngestPolicy.useT3CodeLocalSessions) {
+    const t3Files = listT3CodeStateSqliteFiles(home, cursorIngestPolicy.t3Home);
+    cursorDebug("T3 Code discovery", { databaseCount: t3Files.length });
+    for (const path of t3Files) {
+      add({ kind: "t3code-cursor", path });
+    }
+  }
+  const openclawRoots = [
+    process.env.OPENCLAW_HOME,
+    join(home, ".openclaw"),
+    join(home, ".clawdbot"),
+    join(home, ".moltbot"),
+    join(home, ".moldbot"),
+  ].filter((root): root is string => Boolean(root));
+  for (const root of openclawRoots) {
+    await scan(join(root, "agents"), "**/*.jsonl*", "openclaw");
+  }
   return sources;
 }
 async function fingerprint(path: string, companion?: string) {
@@ -335,6 +486,9 @@ async function parseUnpriced(
     } catch {}
     return parseCopilotDesktopSqlite(source.path, events);
   }
+  if (source.kind === "t3code-cursor") {
+    return parseT3CodeCursorSqlite(source.path);
+  }
   const text = await Bun.file(source.path).text();
   switch (source.kind) {
     case "claude": {
@@ -359,6 +513,17 @@ async function parseUnpriced(
         uri = workspace.folder ?? workspace.workspace;
       } catch {}
       return parseCopilotVsCode(text, source.path, uri);
+    }
+    case "cursor": {
+      return parseCursorCsv(text, source.path, {
+        agentWorkspaces: cursorCloudAgentWorkspaces,
+        includeAutomations: cursorIngestPolicy.includeAutomations,
+        includeCloudAgents: cursorIngestPolicy.includeCloudAgents,
+        skipLocalRows: cursorIngestPolicy.useT3CodeLocalSessions,
+      });
+    }
+    case "openclaw": {
+      return parseOpenClaw(text, source.path, mtime);
     }
     default: {
       return [];
@@ -388,7 +553,12 @@ interface SyncPlan {
   sourceUpdates: NonNullable<IngestRequest["sourceUpdates"]>;
   scans: ScanState[];
 }
-const sqliteKinds = new Set(["opencode-sqlite", "hermes", "copilot-desktop"]);
+const sqliteKinds = new Set([
+  "opencode-sqlite",
+  "hermes",
+  "copilot-desktop",
+  "t3code-cursor",
+]);
 const sessionHash = (messages: UsageMessage[]) =>
   Bun.hash(JSON.stringify(messages)).toString(16);
 
@@ -778,6 +948,203 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
   }
 };
 
+const cursorDashboardEnabled = (): boolean =>
+  process.env.TOKTRACKER_CURSOR_DASHBOARD !== "0";
+
+const cursorClientPolicySchema = z.object({
+  cloudAgentApiKey: z.string().optional(),
+  commands: z.array(
+    z.object({
+      accountId: z.string().optional(),
+      cloudAgentApiKey: z.string().optional(),
+      id: z.string(),
+      label: z.string().optional(),
+      token: z.string().optional(),
+      type: z.string(),
+    })
+  ),
+  includeAutomations: z.boolean().optional(),
+  includeCloudAgents: z.boolean().optional(),
+  syncIntervalMs: z.number().finite().positive(),
+  t3Home: z.string().optional(),
+  useT3CodeLocalSessions: z.boolean().optional(),
+});
+
+const gatewayHeaders = (): Headers => {
+  const headers = new Headers();
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  if (accessKey) {
+    headers.set("authorization", `Bearer ${accessKey}`);
+  }
+  return headers;
+};
+
+const applyCursorCommands = async (): Promise<void> => {
+  if (!cursorDashboardEnabled()) {
+    return;
+  }
+  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  warnAboutInsecureGateway(endpoint, accessKey);
+  const cursorPaths = resolveCursorPaths(dataDir, home);
+  try {
+    const policyResponse = await fetch(
+      `${endpoint}/api/v1/client-cursor-policy?deviceId=${encodeURIComponent(deviceId!)}`,
+      {
+        headers: gatewayHeaders(),
+        signal: AbortSignal.timeout(5000),
+      }
+    );
+    if (!policyResponse.ok) {
+      cursorDebug("policy request failed", {
+        status: policyResponse.status,
+        statusText: policyResponse.statusText,
+      });
+      return;
+    }
+    const policy = cursorClientPolicySchema.parse(await policyResponse.json());
+    cursorDebug("policy received", {
+      apiKeyConfigured: Boolean(policy.cloudAgentApiKey?.trim()),
+      commandTypes: policy.commands.map((command) => command.type),
+      syncIntervalMs: policy.syncIntervalMs,
+    });
+    cursorSyncIntervalMs = clampCursorSyncIntervalMs(policy.syncIntervalMs);
+    cursorIngestPolicy.cloudAgentApiKey =
+      policy.cloudAgentApiKey?.trim() || undefined;
+    cursorIngestPolicy.includeAutomations = policy.includeAutomations ?? false;
+    cursorIngestPolicy.includeCloudAgents = policy.includeCloudAgents ?? false;
+    cursorIngestPolicy.t3Home = policy.t3Home?.trim() || undefined;
+    cursorIngestPolicy.useT3CodeLocalSessions =
+      policy.useT3CodeLocalSessions ?? true;
+    const acknowledged: string[] = [];
+    for (const command of policy.commands) {
+      try {
+        cursorDebug("applying command", {
+          accountId: command.accountId,
+          id: command.id,
+          type: command.type,
+        });
+        if (command.type === "import-desktop") {
+          await importDesktopCursorAccounts(cursorPaths);
+        } else if (command.type === "add-account" && command.token) {
+          await upsertCursorAccount(
+            cursorPaths,
+            command.token,
+            command.label,
+            command.cloudAgentApiKey
+          );
+        } else if (
+          command.type === "set-api-key" &&
+          command.accountId &&
+          command.cloudAgentApiKey
+        ) {
+          await setCursorCloudAgentApiKey(
+            cursorPaths,
+            command.accountId,
+            command.cloudAgentApiKey
+          );
+        } else if (command.type === "remove-account" && command.accountId) {
+          await removeCursorAccount(cursorPaths, command.accountId, true);
+        } else if (command.type === "switch-account" && command.accountId) {
+          await setActiveCursorAccount(cursorPaths, command.accountId);
+        }
+        acknowledged.push(command.id);
+        cursorDebug("command applied", { id: command.id, type: command.type });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        // Dashboard commands are durable, while an account can already have
+        // been removed locally (or use an older account-ID format). DELETE is
+        // idempotent, so acknowledge this completed command instead of
+        // retrying it forever.
+        if (
+          command.type === "remove-account" &&
+          message.startsWith("Cursor account not found:")
+        ) {
+          acknowledged.push(command.id);
+          cursorDebug("remove command already complete", {
+            accountId: command.accountId,
+            id: command.id,
+          });
+          continue;
+        }
+        cursorLastError = message;
+        cursorDebug("command failed", {
+          error: cursorLastError,
+          id: command.id,
+          type: command.type,
+        });
+      }
+    }
+    if (acknowledged.length > 0) {
+      const acknowledgement = await fetch(
+        `${endpoint}/api/v1/client-cursor-commands/ack`,
+        {
+          body: JSON.stringify({
+            commandIds: acknowledged,
+            deviceId,
+          }),
+          headers: (() => {
+            const headers = gatewayHeaders();
+            headers.set("content-type", "application/json");
+            return headers;
+          })(),
+          method: "POST",
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+      cursorDebug("commands acknowledged", {
+        count: acknowledged.length,
+        status: acknowledgement.status,
+      });
+    }
+  } catch (error) {
+    console.warn("TokTracker: Cursor dashboard commands failed", error);
+  }
+};
+
+const reportCursorStatus = async (): Promise<void> => {
+  if (!cursorDashboardEnabled()) {
+    return;
+  }
+  const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
+  const cursorPaths = resolveCursorPaths(dataDir, home);
+  try {
+    const desktop = readDesktopCursorSessions(home);
+    const accounts = await listCursorAccounts(cursorPaths);
+    cursorDebug("reporting status", {
+      accountIds: accounts.map((account) => account.id),
+      desktopSessions: desktop.length,
+      lastError: cursorLastError,
+    });
+    const response = await fetch(`${endpoint}/api/v1/client-cursor-status`, {
+      body: JSON.stringify({
+        accounts: accounts.map((account) => ({
+          cloudAgentApiKeyConfigured: account.cloudAgentApiKeyConfigured,
+          id: account.id,
+          isActive: account.isActive,
+          label: account.label,
+        })),
+        desktopEmail: desktop[0]?.email,
+        desktopSignedIn: desktop.length > 0,
+        deviceId,
+        lastError: cursorLastError,
+        lastSyncAt: cursorLastSyncAt,
+        syncIntervalMs: cursorSyncIntervalMs,
+      }),
+      headers: (() => {
+        const headers = gatewayHeaders();
+        headers.set("content-type", "application/json");
+        return headers;
+      })(),
+      method: "POST",
+      signal: AbortSignal.timeout(5000),
+    });
+    cursorDebug("status reported", { status: response.status });
+  } catch (error) {
+    console.warn("TokTracker: Cursor dashboard status failed", error);
+  }
+};
+
 const planIsCurrent = async (plan: SyncPlan): Promise<boolean> => {
   for (const scan of plan.scans) {
     try {
@@ -799,7 +1166,9 @@ const planIsCurrent = async (plan: SyncPlan): Promise<boolean> => {
 
 async function sync() {
   await applyGatewayUpdatePolicy();
+  await applyCursorCommands();
   const plan = await changedSessions();
+  await reportCursorStatus();
   const mustContactGateway =
     plan.sessions.length > 0 ||
     plan.sourceUpdates.some(
@@ -812,8 +1181,13 @@ async function sync() {
     return;
   }
   if (!(await planIsCurrent(plan))) {
-    console.warn("TokTracker: sources changed during sync; rescanning");
-    return sync();
+    // Cursor/T3 SQLite files can be written continuously. Retrying the entire
+    // plan here starves every source (including the already-stable usage CSV)
+    // and leaves the dashboard empty forever. Upload this snapshot; the next
+    // scan detects the changed fingerprint and reconciles it with a replace.
+    console.warn(
+      "TokTracker: sources changed during sync; uploading snapshot and reconciling next scan"
+    );
   }
   await uploadPlan(plan);
   commit(plan);

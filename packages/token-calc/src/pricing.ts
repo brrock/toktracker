@@ -215,11 +215,28 @@ export const parseLiteLlmCatalog = (value: JsonValue) => {
   return catalog;
 };
 
+const UNPRICED_MODEL_NAMES = new Set(["auto", "default", "unknown"]);
+
+export const isUnpricedModelId = (modelId: string): boolean => {
+  const terminal = modelId.toLowerCase().split("/").at(-1) ?? "";
+  const withoutClientPrefix = terminal.replace(
+    /^(?<client>cursor|copilot)-/u,
+    ""
+  );
+  return (
+    UNPRICED_MODEL_NAMES.has(terminal) ||
+    UNPRICED_MODEL_NAMES.has(withoutClientPrefix)
+  );
+};
+
 export const findModelPrice = (
   catalog: PriceCatalog,
   modelId: string,
   providerId: string
 ): ModelPrice | undefined => {
+  if (isUnpricedModelId(modelId)) {
+    return undefined;
+  }
   const rawModel = modelId.toLowerCase();
   const model = rawModel.replace(/-\d{8}$/u, "");
   const modelProvider = model.includes("/") ? model.split("/")[0] : undefined;
@@ -273,7 +290,10 @@ export const applyEstimatedPricing = (
   catalog: PriceCatalog
 ): UsageMessage[] =>
   messages.map((message) => {
-    if (message.costSource === "providerReported") {
+    if (
+      message.costSource === "providerReported" ||
+      isUnpricedModelId(message.modelId)
+    ) {
       return message;
     }
     const price = findModelPrice(catalog, message.modelId, message.providerId);

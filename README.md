@@ -63,12 +63,14 @@ For prereleases, add `--nightly` on macOS/Linux or `-Nightly` in PowerShell.
 | -------------- | --------------------------------------------------------- |
 | Claude Code    | JSONL sessions                                            |
 | Codex          | JSONL sessions and local titles                           |
+| Cursor IDE     | Usage CSV via desktop login (multi-account)               |
 | Pi             | JSONL sessions                                            |
 | OpenCode       | Legacy JSON and SQLite v1/v2                              |
+| OpenClaw       | Agent JSONL transcripts                                   |
 | Hermes Agent   | SQLite                                                    |
 | GitHub Copilot | OTEL/CLI JSONL, Desktop SQLite, and VS Code chat sessions |
 
-TokTracker only scans these local agent-data locations. It does not proxy requests to model providers or inspect your editor in real time.
+TokTracker scans these local agent-data locations. Cursor usage is the exception: the client reads the signed-in Cursor desktop session and exports usage CSV from Cursor's API for every saved account. It does not inspect your editor in real time.
 
 ## Configuration, updates, and pairing
 
@@ -86,6 +88,10 @@ toktracker-gateway config set port 4310
 toktracker-gateway bind 100.78.66.1
 toktracker-client config set gateway-url http://server:3000
 toktracker-client config set interval-ms 120000
+# Import Cursor usage for the signed-in desktop account (and any others you add)
+toktracker-client cursor login --name work
+toktracker-client cursor accounts
+toktracker-client cursor sync --force
 # Opt this client out of gateway-managed automatic updates.
 toktracker-client config set gateway-auto-update 0
 toktracker-client config unset encryption-key
@@ -154,11 +160,13 @@ bun run dev
 
 Open **http://localhost:5173**. Development mode starts all three pieces:
 
-| Service   | Address               | Purpose                            |
-| --------- | --------------------- | ---------------------------------- |
-| Dashboard | http://localhost:5173 | Vite development UI                |
-| Gateway   | http://localhost:4310 | API and local database             |
-| Client    | —                     | Scans sessions and uploads changes |
+| Service | Address | Purpose |
+| --- | --- | --- |
+| Dashboard | http://localhost:5173 | Vite development UI |
+| Gateway | http://localhost:4310 | API and local database |
+| Client | — | Scans sessions, imports Cursor desktop auth, and uploads changes |
+
+`bun run dev` imports the signed-in Cursor desktop account automatically. Open **Settings → Cursor** to check auth status, add accounts, and change the usage sync interval.
 
 Development data is stored in `.dev-data/` and ignored by Git. Reset it with:
 

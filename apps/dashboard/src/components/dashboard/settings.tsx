@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { AgentLogo } from "@/components/dashboard/primitives";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
@@ -17,11 +18,12 @@ import { apiFetch } from "@/lib/api";
 import { recentDate } from "@/lib/dashboard";
 import {
   clientAutoUpdateSettingsSchema,
+  cursorDashboardOverviewSchema,
   dashboardDeviceListSchema,
   dashboardSummarySchema,
 } from "@/lib/schemas";
 
-export type SettingsSection = "general" | "devices" | "export";
+export type SettingsSection = "general" | "devices" | "export" | "cursor";
 interface DashboardDevice {
   createdAt: number;
   id: string;
@@ -41,6 +43,36 @@ interface ClientAutoUpdateSettings {
   windowStartHour: number;
 }
 
+interface CursorAccountStatus {
+  cloudAgentApiKeyConfigured?: boolean;
+  id: string;
+  isActive: boolean;
+  label?: string;
+}
+
+interface CursorDeviceOverview {
+  accounts: CursorAccountStatus[];
+  desktopEmail?: string;
+  desktopSignedIn: boolean;
+  deviceId: string;
+  lastError?: string;
+  lastSyncAt?: number;
+  name?: string;
+  syncIntervalMs: number;
+  updatedAt: number;
+}
+
+interface CursorOverview {
+  cloudAgentApiKey?: string;
+  devices: CursorDeviceOverview[];
+  enabled: boolean;
+  includeAutomations: boolean;
+  includeCloudAgents: boolean;
+  syncIntervalMs: number;
+  t3Home?: string;
+  useT3CodeLocalSessions: boolean;
+}
+
 const startOfDay = (date: Date): Date =>
   new Date(date.getFullYear(), date.getMonth(), date.getDate());
 const dateKey = (date: Date): string =>
@@ -49,6 +81,17 @@ const rangeLabel = (range: DateRange): string =>
   `${range.from.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })} – ${range.to.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`;
 const isOnline = (lastSeen: number): boolean =>
   Date.now() - lastSeen < 5 * 60_000;
+
+type CursorDebugDetails = Record<
+  string,
+  boolean | number | string | string[] | undefined
+>;
+
+const cursorDebug = (event: string, details: CursorDebugDetails): void => {
+  if (import.meta.env.DEV) {
+    console.info(`[TokTracker Cursor dashboard] ${event}`, details);
+  }
+};
 
 const Calendar = ({
   range,
@@ -189,26 +232,29 @@ export const SettingsNavigation = ({
     {(
       [
         { icon: SlidersHorizontal, label: "General", value: "general" },
+        { icon: "cursor", label: "Cursor", value: "cursor" },
         { icon: MonitorSmartphone, label: "Devices", value: "devices" },
         { icon: Download, label: "Data & export", value: "export" },
       ] as const
-    ).map((item) => {
-      const Icon = item.icon;
-      return (
-        <button
-          type="button"
-          key={item.value}
-          onClick={() => setSection(item.value)}
-          className={`flex items-center gap-3 rounded-md px-3 py-2 text-left transition ${section === item.value ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
-        >
-          <Icon size={15} />
-          {item.label}
-        </button>
-      );
-    })}
+    ).map((item) => (
+      <button
+        type="button"
+        key={item.value}
+        onClick={() => setSection(item.value)}
+        className={`flex items-center gap-3 rounded-md px-3 py-2 text-left transition ${section === item.value ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+      >
+        {item.icon === "cursor" ? (
+          <AgentLogo name="cursor" size="size-4" />
+        ) : (
+          <item.icon size={15} />
+        )}
+        {item.label}
+      </button>
+    ))}
   </nav>
 );
 
+/* eslint-disable complexity -- settings sections are independent views in one page */
 export const SettingsPage = ({
   data,
   section,
@@ -226,6 +272,13 @@ export const SettingsPage = ({
   const [clientAutoUpdate, setClientAutoUpdate] =
     useState<ClientAutoUpdateSettings>();
   const [savingClientAutoUpdate, setSavingClientAutoUpdate] = useState(false);
+  const [cursorSettings, setCursorSettings] = useState<CursorOverview>();
+  const [savingCursor, setSavingCursor] = useState(false);
+  const [cursorToken, setCursorToken] = useState("");
+  const [cursorAccountApiKey, setCursorAccountApiKey] = useState("");
+  const [cursorLabel, setCursorLabel] = useState("");
+  const [cursorDeviceId, setCursorDeviceId] = useState("");
+  const [cursorMessage, setCursorMessage] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>(() =>
     data.devices.map((device) => device.id)
   );
@@ -251,6 +304,40 @@ export const SettingsPage = ({
       }
     };
     void loadClientAutoUpdate();
+  }, [section]);
+  useEffect(() => {
+    if (section !== "cursor") {
+      return;
+    }
+    const loadCursorSettings = async (): Promise<void> => {
+      try {
+        const response = await apiFetch("/api/v1/settings/cursor");
+        if (!response.ok) {
+          setCursorSettings(undefined);
+          return;
+        }
+        const overview = cursorDashboardOverviewSchema.parse(
+          await response.json()
+        );
+        setCursorSettings(overview);
+        setCursorDeviceId((current) => {
+          if (current) {
+            return current;
+          }
+          return overview.devices[0]?.deviceId ?? "";
+        });
+      } catch {
+        setCursorSettings(undefined);
+      }
+    };
+    void loadCursorSettings();
+    // Account actions are executed by the client asynchronously. Refresh this
+    // status while the page is open so "queued" becomes visible without a
+    // manual browser reload.
+    const refreshInterval = window.setInterval(() => {
+      void loadCursorSettings();
+    }, 5000);
+    return () => window.clearInterval(refreshInterval);
   }, [section]);
   useEffect(() => {
     if (section !== "devices") {
@@ -337,6 +424,72 @@ export const SettingsPage = ({
     } finally {
       setSavingClientAutoUpdate(false);
     }
+  };
+  const refreshCursorSettings = async (): Promise<void> => {
+    const response = await apiFetch("/api/v1/settings/cursor");
+    if (!response.ok) {
+      return;
+    }
+    const overview = cursorDashboardOverviewSchema.parse(await response.json());
+    setCursorSettings(overview);
+    setCursorDeviceId(
+      (current) => current || overview.devices[0]?.deviceId || ""
+    );
+  };
+  const saveCursorSettings = async (): Promise<void> => {
+    if (!cursorSettings) {
+      return;
+    }
+    setSavingCursor(true);
+    setCursorMessage("");
+    try {
+      const response = await apiFetch("/api/v1/settings/cursor", {
+        body: JSON.stringify({
+          cloudAgentApiKey: cursorSettings.cloudAgentApiKey,
+          enabled: cursorSettings.enabled,
+          includeAutomations: cursorSettings.includeAutomations,
+          includeCloudAgents: cursorSettings.includeCloudAgents,
+          syncIntervalMs: cursorSettings.syncIntervalMs,
+          t3Home: cursorSettings.t3Home,
+          useT3CodeLocalSessions: cursorSettings.useT3CodeLocalSessions,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "PUT",
+      });
+      if (!response.ok) {
+        cursorDebug("settings save failed", { status: response.status });
+        setCursorMessage(`Could not save settings (HTTP ${response.status}).`);
+        return;
+      }
+      cursorDebug("settings saved", {
+        apiKeyConfigured: Boolean(cursorSettings.cloudAgentApiKey?.trim()),
+        syncIntervalMs: cursorSettings.syncIntervalMs,
+      });
+      await refreshCursorSettings();
+      setCursorMessage("Saved Cursor sync settings.");
+    } finally {
+      setSavingCursor(false);
+    }
+  };
+  const queueCursorAction = async (
+    path: string,
+    body: Record<string, string>
+  ): Promise<void> => {
+    setCursorMessage("");
+    const response = await apiFetch(path, {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    if (!response.ok) {
+      cursorDebug("action queue failed", { path, status: response.status });
+      setCursorMessage(`Could not queue action (HTTP ${response.status}).`);
+      return;
+    }
+    cursorDebug("action queued", { path });
+    setCursorToken("");
+    setCursorMessage("Queued for the next client scan.");
+    await refreshCursorSettings();
   };
   const revokeDashboardDevice = async (id: string): Promise<void> => {
     const response = await apiFetch(`/api/v1/dashboard-devices/${id}`, {
@@ -496,6 +649,362 @@ export const SettingsPage = ({
               </Button>
             </div>
           )}
+        </div>
+      </section>
+    );
+  }
+  if (section === "cursor") {
+    const selectedDevice =
+      cursorSettings?.devices.find(
+        (device) => device.deviceId === cursorDeviceId
+      ) ?? cursorSettings?.devices[0];
+    return (
+      <section className="max-w-3xl">
+        <div className="flex items-center gap-3">
+          <AgentLogo name="cursor" size="size-8" />
+          <h2 className="text-2xl font-semibold tracking-tight">Cursor</h2>
+        </div>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Development mode imports your Cursor desktop login automatically.
+          Change accounts and how often usage is synced here.
+        </p>
+        <div className="mt-8 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Sync interval</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            How often clients refresh Cursor usage CSV from Cursor’s API.
+          </p>
+          {cursorSettings && (
+            <div className="mt-4 space-y-4">
+              <label
+                htmlFor="cursor-sync-minutes"
+                className="grid gap-1 text-sm"
+              >
+                Minutes between syncs
+                <Input
+                  id="cursor-sync-minutes"
+                  min="1"
+                  max="1440"
+                  type="number"
+                  value={Math.round(cursorSettings.syncIntervalMs / 60_000)}
+                  onChange={(event) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      syncIntervalMs:
+                        Math.max(1, Number(event.target.value)) * 60_000,
+                    })
+                  }
+                />
+              </label>
+              <label
+                htmlFor="cursor-t3-local"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="cursor-t3-local"
+                  checked={cursorSettings.useT3CodeLocalSessions}
+                  onCheckedChange={(checked) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      includeAutomations: checked === true,
+                      includeCloudAgents: true,
+                      useT3CodeLocalSessions: checked === true,
+                    })
+                  }
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Use T3 Code for local Cursor sessions
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Enables local Cursor project names and session titles.
+                    Cursor&apos;s usage CSV has no project field, so T3 Code
+                    replaces only its local CSV rows; Cloud Agents and
+                    Automations remain included.
+                  </span>
+                </span>
+              </label>
+              <label
+                htmlFor="cursor-include-cloud"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="cursor-include-cloud"
+                  checked={cursorSettings.includeCloudAgents}
+                  disabled
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Include Cloud Agents
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Cloud Agent rows are included from the usage CSV and their
+                    git workspace is fetched from the Cloud Agents API.
+                  </span>
+                </span>
+              </label>
+              <label
+                htmlFor="cursor-include-automations"
+                className="flex cursor-pointer items-start gap-3 rounded-md p-2 hover:bg-muted"
+              >
+                <Checkbox
+                  id="cursor-include-automations"
+                  checked={cursorSettings.includeAutomations}
+                  disabled
+                />
+                <span>
+                  <span className="block text-sm font-medium">
+                    Include Automations
+                  </span>
+                  <span className="block text-sm text-muted-foreground">
+                    Automations are included when T3 Code local sessions are
+                    enabled.
+                  </span>
+                </span>
+              </label>
+              <label htmlFor="cursor-api-key" className="grid gap-1 text-sm">
+                Cloud Agents API key
+                <Input
+                  id="cursor-api-key"
+                  type="password"
+                  autoComplete="off"
+                  placeholder="Cursor Dashboard → API Keys"
+                  value={cursorSettings.cloudAgentApiKey ?? ""}
+                  onChange={(event) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      cloudAgentApiKey: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <p className="text-xs text-muted-foreground">
+                Cursor usage is estimated at public API token rates. Auto stays
+                at $0 because it has no single API model price.
+              </p>
+              <label htmlFor="cursor-t3-home" className="grid gap-1 text-sm">
+                T3 Code home (optional)
+                <Input
+                  id="cursor-t3-home"
+                  placeholder="~/.t3"
+                  value={cursorSettings.t3Home ?? ""}
+                  onChange={(event) =>
+                    setCursorSettings({
+                      ...cursorSettings,
+                      t3Home: event.target.value,
+                    })
+                  }
+                />
+              </label>
+              <Button
+                disabled={savingCursor}
+                size="sm"
+                onClick={saveCursorSettings}
+              >
+                {savingCursor ? "Saving…" : "Save Cursor settings"}
+              </Button>
+            </div>
+          )}
+        </div>
+        <div className="mt-6 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Auth status</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Status reported by each client after it scans Cursor desktop auth.
+          </p>
+          {!cursorSettings?.devices.length && (
+            <p className="mt-4 text-sm text-muted-foreground">
+              Waiting for a client. Keep `bun run dev` running so this machine’s
+              Cursor login is imported and reported here.
+            </p>
+          )}
+          {cursorSettings?.devices.map((device) => (
+            <div key={device.deviceId} className="mt-4 rounded-md border p-3">
+              <p className="text-sm font-medium">
+                {device.name ?? device.deviceId}
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Desktop auth:{" "}
+                {device.desktopSignedIn
+                  ? (device.desktopEmail ?? "signed in")
+                  : "not found"}
+                {device.lastSyncAt
+                  ? ` · Last usage sync ${recentDate(device.lastSyncAt)}`
+                  : ""}
+              </p>
+              {device.lastError && (
+                <p className="mt-1 text-xs text-destructive">
+                  {device.lastError}
+                </p>
+              )}
+              <ul className="mt-3 space-y-2">
+                {device.accounts.map((account) => (
+                  <li
+                    key={account.id}
+                    className="flex items-center justify-between gap-3 text-sm"
+                  >
+                    <span>
+                      {account.isActive ? "* " : ""}
+                      {account.label ?? account.id}
+                      {account.cloudAgentApiKeyConfigured
+                        ? " · API key set"
+                        : " · no API key"}
+                    </span>
+                    <span className="flex gap-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={!cursorAccountApiKey}
+                        onClick={() =>
+                          queueCursorAction(
+                            "/api/v1/settings/cursor/accounts/api-key",
+                            {
+                              accountId: account.id,
+                              cloudAgentApiKey: cursorAccountApiKey,
+                              deviceId: device.deviceId,
+                            }
+                          )
+                        }
+                      >
+                        Set API key
+                      </Button>
+                      {!account.isActive && (
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onClick={() =>
+                            queueCursorAction(
+                              "/api/v1/settings/cursor/accounts/switch",
+                              {
+                                accountId: account.id,
+                                deviceId: device.deviceId,
+                              }
+                            )
+                          }
+                        >
+                          Make active
+                        </Button>
+                      )}
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() =>
+                          queueCursorAction(
+                            "/api/v1/settings/cursor/accounts/remove",
+                            {
+                              accountId: account.id,
+                              deviceId: device.deviceId,
+                            }
+                          )
+                        }
+                      >
+                        Remove
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))}
+        </div>
+        <div className="mt-6 rounded-lg border bg-card p-4">
+          <h3 className="font-medium">Add account</h3>
+          <p className="mt-1 text-sm text-muted-foreground">
+            Import the desktop session again, or paste a
+            WorkosCursorSessionToken value.
+          </p>
+          <div className="mt-4 grid gap-3">
+            <label htmlFor="cursor-device" className="grid gap-1 text-sm">
+              Client device
+              <select
+                id="cursor-device"
+                value={selectedDevice?.deviceId ?? cursorDeviceId}
+                className="h-8 rounded-lg border border-input bg-transparent px-2 text-sm"
+                onChange={(event) => setCursorDeviceId(event.target.value)}
+              >
+                {(cursorSettings?.devices.length
+                  ? cursorSettings.devices.map((device) => ({
+                      id: device.deviceId,
+                      name: device.name ?? device.deviceId,
+                    }))
+                  : data.devices.map((device) => ({
+                      id: device.id,
+                      name: device.name,
+                    }))
+                ).map((device) => (
+                  <option key={device.id} value={device.id}>
+                    {device.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label
+              htmlFor="cursor-account-label"
+              className="grid gap-1 text-sm"
+            >
+              Label
+              <Input
+                id="cursor-account-label"
+                value={cursorLabel}
+                onChange={(event) => setCursorLabel(event.target.value)}
+              />
+            </label>
+            <label
+              htmlFor="cursor-account-api-key"
+              className="grid gap-1 text-sm"
+            >
+              Cloud Agents API key for this account (optional)
+              <Input
+                id="cursor-account-api-key"
+                type="password"
+                value={cursorAccountApiKey}
+                onChange={(event) => setCursorAccountApiKey(event.target.value)}
+              />
+            </label>
+            <label
+              htmlFor="cursor-account-token"
+              className="grid gap-1 text-sm"
+            >
+              Session token
+              <Input
+                id="cursor-account-token"
+                type="password"
+                value={cursorToken}
+                onChange={(event) => setCursorToken(event.target.value)}
+              />
+            </label>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                disabled={
+                  !cursorToken || !(selectedDevice?.deviceId ?? cursorDeviceId)
+                }
+                onClick={() =>
+                  queueCursorAction("/api/v1/settings/cursor/accounts", {
+                    cloudAgentApiKey: cursorAccountApiKey,
+                    deviceId: selectedDevice?.deviceId ?? cursorDeviceId,
+                    label: cursorLabel,
+                    token: cursorToken,
+                  })
+                }
+              >
+                Add account
+              </Button>
+              <Button
+                size="sm"
+                variant="outline"
+                disabled={!(selectedDevice?.deviceId ?? cursorDeviceId)}
+                onClick={() =>
+                  queueCursorAction("/api/v1/settings/cursor/import-desktop", {
+                    deviceId: selectedDevice?.deviceId ?? cursorDeviceId,
+                  })
+                }
+              >
+                Import desktop login
+              </Button>
+            </div>
+            {cursorMessage && (
+              <p className="text-sm text-muted-foreground">{cursorMessage}</p>
+            )}
+          </div>
         </div>
       </section>
     );

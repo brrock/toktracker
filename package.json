@@ -23,6 +23,11 @@
     "check": "ultracite check",
     "fix": "ultracite fix"
   },
+  "dependencies": {
+    "@toktracker/cli": "workspace:*",
+    "@toktracker/shared": "workspace:*",
+    "@toktracker/token-calc": "workspace:*"
+  },
   "devDependencies": {
     "@oxlint/plugins": "1.78.0",
     "@types/bun": "^1.3.14",

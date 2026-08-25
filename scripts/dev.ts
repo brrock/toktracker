@@ -20,9 +20,11 @@ const gatewayUrl = `http://localhost:${gatewayPort}`;
 const sharedEnvironment = {
   ...process.env,
   PORT: gatewayPort,
+  TOKTRACKER_CURSOR_DASHBOARD: "1",
   TOKTRACKER_DASHBOARD_PORT: dashboardPort,
   TOKTRACKER_DATA_DIR: clientData,
   TOKTRACKER_DB: path.join(gatewayData, "toktracker.db"),
+  TOKTRACKER_DEV: "1",
   TOKTRACKER_DISABLE_DASHBOARD_AUTH: "1",
   TOKTRACKER_GATEWAY: gatewayUrl,
 };
@@ -49,6 +51,7 @@ process.stdout.write(
     `  Dashboard: http://localhost:${dashboardPort}`,
     `  Gateway:   ${gatewayUrl}`,
     `  Data:      ${developmentData}`,
+    "  Cursor:    imports desktop login; manage accounts in Settings → Cursor",
     "  Reset:     TOKTRACKER_DEV_RESET=1 bun run dev",
     "",
   ].join("\n")

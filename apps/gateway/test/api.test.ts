@@ -6,6 +6,7 @@ import path from "node:path";
 
 import { encryptPayload } from "@toktracker/shared";
 import type { IngestRequest } from "@toktracker/shared";
+import { z } from "zod";
 
 import { createApp } from "../src/app";
 import { Store } from "../src/store";
@@ -263,6 +264,94 @@ describe("gateway API", () => {
       expect(response.status).toBe(400);
       expect(response.body).toEqual({ error: "Invalid update settings" });
     }
+  });
+
+  test("exposes Cursor dashboard settings and queues account commands", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const unauthorized = await app.request("/api/v1/settings/cursor");
+    expect(unauthorized.status).toBe(401);
+
+    const headers = await pairDashboard(app, store);
+    const overview = await app.request("/api/v1/settings/cursor", { headers });
+    expect(overview.status).toBe(200);
+    expect(await overview.json()).toMatchObject({
+      devices: [],
+      enabled: true,
+    });
+
+    const saved = await app.request("/api/v1/settings/cursor", {
+      body: JSON.stringify({ enabled: true, syncIntervalMs: 120_000 }),
+      headers: { ...headers, "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(saved.status).toBe(200);
+    expect(await saved.json()).toEqual({
+      enabled: true,
+      includeAutomations: false,
+      includeCloudAgents: true,
+      syncIntervalMs: 120_000,
+      useT3CodeLocalSessions: false,
+    });
+
+    const queued = await app.request("/api/v1/settings/cursor/accounts", {
+      body: JSON.stringify({
+        deviceId: "client-1",
+        label: "work",
+        token: "user_abc%3A%3Atoken",
+      }),
+      headers: { ...headers, "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(queued.status).toBe(200);
+
+    const policy = await app.request(
+      "/api/v1/client-cursor-policy?deviceId=client-1"
+    );
+    expect(policy.status).toBe(200);
+    const policyBody = z
+      .object({
+        commands: z.array(
+          z.object({
+            label: z.string().optional(),
+            token: z.string().optional(),
+            type: z.string(),
+          })
+        ),
+        syncIntervalMs: z.number(),
+      })
+      .parse(await policy.json());
+    expect(policyBody.syncIntervalMs).toBe(120_000);
+    expect(policyBody.commands).toEqual([
+      expect.objectContaining({
+        label: "work",
+        token: "user_abc%3A%3Atoken",
+        type: "add-account",
+      }),
+    ]);
+
+    const status = await app.request("/api/v1/client-cursor-status", {
+      body: JSON.stringify({
+        accounts: [{ id: "user_abc", isActive: true, label: "work" }],
+        desktopEmail: "work@example.com",
+        desktopSignedIn: true,
+        deviceId: "client-1",
+        syncIntervalMs: 120_000,
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(status.status).toBe(200);
+    const reported = await app.request("/api/v1/settings/cursor", { headers });
+    expect(await reported.json()).toMatchObject({
+      devices: [
+        expect.objectContaining({
+          desktopEmail: "work@example.com",
+          desktopSignedIn: true,
+          deviceId: "client-1",
+        }),
+      ],
+    });
   });
 
   test("authenticates encrypted ingestion without exposing the key and rejects replays", async () => {
