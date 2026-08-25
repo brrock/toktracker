@@ -15,7 +15,10 @@ import type {
 } from "@toktracker/shared";
 import type { PriceCatalog } from "@toktracker/token-calc";
 import {
+  accountIdFromCursorCachePath,
+  activeCursorCloudAgentApiKey,
   applyEstimatedPricing,
+  cursorCloudAgentApiKeys,
   clampCursorSyncIntervalMs,
   DEFAULT_CURSOR_SYNC_INTERVAL_MS,
   fetchCloudAgentWorkspaces,
@@ -42,6 +45,7 @@ import {
   removeCursorAccount,
   resolveCursorPaths,
   setActiveCursorAccount,
+  setCursorCloudAgentApiKey,
   syncCursorUsageCaches,
   upsertCursorAccount,
 } from "@toktracker/token-calc";
@@ -51,10 +55,9 @@ const home = process.env.HOME ?? process.env.USERPROFILE ?? ".";
 const dataDir = process.env.TOKTRACKER_DATA_DIR ?? join(home, ".toktracker");
 await mkdir(dataDir, { recursive: true });
 const PRICING_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
-// Version 9 reads local Cursor sessions from T3 Code and optional Cloud Agent
-// workspaces from the Cursor API instead of treating the usage CSV as the only
-// local source.
-const INDEX_SCHEMA_VERSION = 9;
+// Version 12 recalculates all Cursor rows at public API token prices rather
+// than using Cursor's subscription-specific CSV cost.
+const INDEX_SCHEMA_VERSION = 12;
 const MAX_GATEWAY_BODY_BYTES = 16 * 1024 * 1024;
 // AES-GCM payloads are base64 encoded, so leave room for that expansion.
 const MAX_BATCH_PLAINTEXT_BYTES = 11 * 1024 * 1024;
@@ -64,6 +67,15 @@ const MAX_BATCH_MESSAGES = 100_000;
 const MAX_BATCH_SOURCE_UPDATES = 10_000;
 const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+type CursorDebugDetails = Record<
+  string,
+  boolean | number | string | string[] | undefined
+>;
+const cursorDebug = (event: string, details: CursorDebugDetails): void => {
+  if (process.env.TOKTRACKER_DEV === "1") {
+    console.info(`TokTracker: Cursor ${event}`, details);
+  }
+};
 let cursorSyncIntervalMs = clampCursorSyncIntervalMs(
   Number(
     process.env.TOKTRACKER_CURSOR_SYNC_INTERVAL_MS ??
@@ -84,7 +96,7 @@ interface CursorIngestPolicy {
 const cursorIngestPolicy: CursorIngestPolicy = {
   includeAutomations: false,
   includeCloudAgents: true,
-  useT3CodeLocalSessions: false,
+  useT3CodeLocalSessions: true,
 };
 
 const optionalStringSchema = z.string();
@@ -367,31 +379,43 @@ async function discover(): Promise<Source[]> {
     cursorIngestPolicy.includeCloudAgents ||
     cursorIngestPolicy.includeAutomations;
   if (needCursorCsv) {
-    if (
-      cursorIngestPolicy.includeCloudAgents &&
-      cursorIngestPolicy.cloudAgentApiKey
-    ) {
-      const agentIds = new Set<string>();
+    if (cursorIngestPolicy.includeCloudAgents) {
+      const credentials = await cursorCloudAgentApiKeys(cursorPaths);
+      const fallbackKey =
+        (await activeCursorCloudAgentApiKey(cursorPaths)) ??
+        cursorIngestPolicy.cloudAgentApiKey;
+      cursorCloudAgentWorkspaces = {};
       for (const path of csvFiles) {
-        for (const agentId of listCursorCsvCloudAgentIds(
-          await Bun.file(path).text()
-        )) {
-          agentIds.add(agentId);
+        const accountId = accountIdFromCursorCachePath(path);
+        const apiKey =
+          credentials.keys[
+            accountId === "active" ? credentials.activeAccountId : accountId
+          ] ?? fallbackKey;
+        if (!apiKey) {
+          continue;
         }
-      }
-      try {
-        cursorCloudAgentWorkspaces = await fetchCloudAgentWorkspaces(
-          [...agentIds],
-          {
-            apiKey: cursorIngestPolicy.cloudAgentApiKey,
+        const agentIds = listCursorCsvCloudAgentIds(
+          await Bun.file(path).text()
+        );
+        try {
+          const workspaces = await fetchCloudAgentWorkspaces(agentIds, {
+            apiKey,
             cachePath: join(
               cursorPaths.cacheDir,
-              "cloud-agent-workspaces.json"
+              `cloud-agent-workspaces.${accountId}.json`
             ),
-          }
-        );
-      } catch (error) {
-        console.warn("TokTracker: Cloud agent workspace lookup failed", error);
+          });
+          Object.assign(cursorCloudAgentWorkspaces, workspaces);
+          cursorDebug("Cloud Agents lookup finished", {
+            accountId,
+            workspaceCount: Object.keys(workspaces).length,
+          });
+        } catch (error) {
+          cursorDebug("Cloud Agents lookup failed", {
+            accountId,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
       }
     } else {
       cursorCloudAgentWorkspaces = {};
@@ -401,10 +425,9 @@ async function discover(): Promise<Source[]> {
     }
   }
   if (cursorIngestPolicy.useT3CodeLocalSessions) {
-    for (const path of listT3CodeStateSqliteFiles(
-      home,
-      cursorIngestPolicy.t3Home
-    )) {
+    const t3Files = listT3CodeStateSqliteFiles(home, cursorIngestPolicy.t3Home);
+    cursorDebug("T3 Code discovery", { databaseCount: t3Files.length });
+    for (const path of t3Files) {
       add({ kind: "t3code-cursor", path });
     }
   }
@@ -933,6 +956,7 @@ const cursorClientPolicySchema = z.object({
   commands: z.array(
     z.object({
       accountId: z.string().optional(),
+      cloudAgentApiKey: z.string().optional(),
       id: z.string(),
       label: z.string().optional(),
       token: z.string().optional(),
@@ -972,9 +996,18 @@ const applyCursorCommands = async (): Promise<void> => {
       }
     );
     if (!policyResponse.ok) {
+      cursorDebug("policy request failed", {
+        status: policyResponse.status,
+        statusText: policyResponse.statusText,
+      });
       return;
     }
     const policy = cursorClientPolicySchema.parse(await policyResponse.json());
+    cursorDebug("policy received", {
+      apiKeyConfigured: Boolean(policy.cloudAgentApiKey?.trim()),
+      commandTypes: policy.commands.map((command) => command.type),
+      syncIntervalMs: policy.syncIntervalMs,
+    });
     cursorSyncIntervalMs = clampCursorSyncIntervalMs(policy.syncIntervalMs);
     cursorIngestPolicy.cloudAgentApiKey =
       policy.cloudAgentApiKey?.trim() || undefined;
@@ -986,34 +1019,82 @@ const applyCursorCommands = async (): Promise<void> => {
     const acknowledged: string[] = [];
     for (const command of policy.commands) {
       try {
+        cursorDebug("applying command", {
+          accountId: command.accountId,
+          id: command.id,
+          type: command.type,
+        });
         if (command.type === "import-desktop") {
           await importDesktopCursorAccounts(cursorPaths);
         } else if (command.type === "add-account" && command.token) {
-          await upsertCursorAccount(cursorPaths, command.token, command.label);
+          await upsertCursorAccount(
+            cursorPaths,
+            command.token,
+            command.label,
+            command.cloudAgentApiKey
+          );
+        } else if (
+          command.type === "set-api-key" &&
+          command.accountId &&
+          command.cloudAgentApiKey
+        ) {
+          await setCursorCloudAgentApiKey(
+            cursorPaths,
+            command.accountId,
+            command.cloudAgentApiKey
+          );
         } else if (command.type === "remove-account" && command.accountId) {
           await removeCursorAccount(cursorPaths, command.accountId, true);
         } else if (command.type === "switch-account" && command.accountId) {
           await setActiveCursorAccount(cursorPaths, command.accountId);
         }
         acknowledged.push(command.id);
+        cursorDebug("command applied", { id: command.id, type: command.type });
       } catch (error) {
-        cursorLastError =
-          error instanceof Error ? error.message : String(error);
+        const message = error instanceof Error ? error.message : String(error);
+        // Dashboard commands are durable, while an account can already have
+        // been removed locally (or use an older account-ID format). DELETE is
+        // idempotent, so acknowledge this completed command instead of
+        // retrying it forever.
+        if (
+          command.type === "remove-account" &&
+          message.startsWith("Cursor account not found:")
+        ) {
+          acknowledged.push(command.id);
+          cursorDebug("remove command already complete", {
+            accountId: command.accountId,
+            id: command.id,
+          });
+          continue;
+        }
+        cursorLastError = message;
+        cursorDebug("command failed", {
+          error: cursorLastError,
+          id: command.id,
+          type: command.type,
+        });
       }
     }
     if (acknowledged.length > 0) {
-      await fetch(`${endpoint}/api/v1/client-cursor-commands/ack`, {
-        body: JSON.stringify({
-          commandIds: acknowledged,
-          deviceId,
-        }),
-        headers: (() => {
-          const headers = gatewayHeaders();
-          headers.set("content-type", "application/json");
-          return headers;
-        })(),
-        method: "POST",
-        signal: AbortSignal.timeout(5000),
+      const acknowledgement = await fetch(
+        `${endpoint}/api/v1/client-cursor-commands/ack`,
+        {
+          body: JSON.stringify({
+            commandIds: acknowledged,
+            deviceId,
+          }),
+          headers: (() => {
+            const headers = gatewayHeaders();
+            headers.set("content-type", "application/json");
+            return headers;
+          })(),
+          method: "POST",
+          signal: AbortSignal.timeout(5000),
+        }
+      );
+      cursorDebug("commands acknowledged", {
+        count: acknowledged.length,
+        status: acknowledgement.status,
       });
     }
   } catch (error) {
@@ -1030,9 +1111,15 @@ const reportCursorStatus = async (): Promise<void> => {
   try {
     const desktop = readDesktopCursorSessions(home);
     const accounts = await listCursorAccounts(cursorPaths);
-    await fetch(`${endpoint}/api/v1/client-cursor-status`, {
+    cursorDebug("reporting status", {
+      accountIds: accounts.map((account) => account.id),
+      desktopSessions: desktop.length,
+      lastError: cursorLastError,
+    });
+    const response = await fetch(`${endpoint}/api/v1/client-cursor-status`, {
       body: JSON.stringify({
         accounts: accounts.map((account) => ({
+          cloudAgentApiKeyConfigured: account.cloudAgentApiKeyConfigured,
           id: account.id,
           isActive: account.isActive,
           label: account.label,
@@ -1052,6 +1139,7 @@ const reportCursorStatus = async (): Promise<void> => {
       method: "POST",
       signal: AbortSignal.timeout(5000),
     });
+    cursorDebug("status reported", { status: response.status });
   } catch (error) {
     console.warn("TokTracker: Cursor dashboard status failed", error);
   }
@@ -1093,8 +1181,13 @@ async function sync() {
     return;
   }
   if (!(await planIsCurrent(plan))) {
-    console.warn("TokTracker: sources changed during sync; rescanning");
-    return sync();
+    // Cursor/T3 SQLite files can be written continuously. Retrying the entire
+    // plan here starves every source (including the already-stable usage CSV)
+    // and leaves the dashboard empty forever. Upload this snapshot; the next
+    // scan detects the changed fingerprint and reconciles it with a replace.
+    console.warn(
+      "TokTracker: sources changed during sync; uploading snapshot and reconciling next scan"
+    );
   }
   await uploadPlan(plan);
   commit(plan);

@@ -110,6 +110,7 @@ export const clientAutoUpdateSettingsSchema = z.object({
   windowStartHour: z.number().int().min(0).max(23),
 });
 export const cursorAccountStatusSchema = z.object({
+  cloudAgentApiKeyConfigured: z.boolean().optional(),
   id: z.string(),
   isActive: z.boolean(),
   label: z.string().optional(),

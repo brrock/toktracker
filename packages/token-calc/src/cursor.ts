@@ -34,12 +34,6 @@ const parseCsvLine = (line: string): string[] => {
 const cleanField = (value: string | undefined): string =>
   (value ?? "").trim().replace(/^"|"$/g, "").trim();
 
-const parseFiniteCost = (costStr: string): number | undefined => {
-  const cleaned = costStr.replaceAll(/[$,]/g, "").trim();
-  const cost = Number(cleaned);
-  return Number.isFinite(cost) && cost >= 0 ? cost : undefined;
-};
-
 const parseDateToTimestamp = (dateStr: string): number => {
   const iso = Date.parse(dateStr);
   if (Number.isFinite(iso)) {
@@ -191,7 +185,12 @@ export function parseCursorCsv(
     if (!timestamp) {
       continue;
     }
-    const cost = parseFiniteCost(cleanField(fields[costIdx]));
+    // Cursor's CSV cost is plan/metering-specific (for example, "Included"
+    // and "Free"), not the API-equivalent price requested by TokTracker.
+    // Keep every Cursor row unpriced so the shared catalog estimates it from
+    // tokens. `auto` remains $0 because it is explicitly unpriced there.
+    const cost = 0;
+    const costSource = "unknown";
     const cloudAgentId =
       cloudAgentIdx >= 0 ? cleanField(fields[cloudAgentIdx]) : "";
     const automationId =
@@ -218,8 +217,8 @@ export function parseCursorCsv(
     messages.push(
       makeMessage({
         client: "cursor",
-        cost: cost ?? 0,
-        costSource: cost === undefined ? "unknown" : "providerReported",
+        cost,
+        costSource,
         dedupKey: `cursor:${accountId}:${dateStr}:${model}:${messages.length}`,
         modelId: model,
         providerId: inferProvider(model) ?? "cursor",

@@ -4,19 +4,22 @@ import { afterEach, describe, expect, test } from "bun:test";
 import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 
 import type { CursorFetch } from "../src";
 import {
+  cursorStateVscdbCandidates,
   deriveAccountId,
   fetchCloudAgentWorkspaces,
   listCursorUsageCsvFiles,
+  listCursorAccounts,
   normalizeCursorSessionToken,
   parseCursorCsv,
   parseOpenClaw,
   parseOpenClawIndex,
   parseT3CodeCursorSqlite,
   readDesktopCursorSessions,
+  removeCursorAccount,
   resolveCursorPaths,
   sessionTokenFromAccessToken,
   syncCursorUsageCaches,
@@ -61,8 +64,8 @@ describe("Cursor usage CSV parser", () => {
       output: 15,
       reasoning: 0,
     });
-    expect(old?.cost).toBe(0.1);
-    expect(old?.costSource).toBe("providerReported");
+    expect(old?.cost).toBe(0);
+    expect(old?.costSource).toBe("unknown");
     expect(old?.sessionId).toBe("cursor-active-2025-02-01");
 
     const v2 = `Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
@@ -72,7 +75,8 @@ describe("Cursor usage CSV parser", () => {
     expect(next?.providerId).toBe("cursor");
     expect(next?.workspaceLabel).toBeUndefined();
     expect(next?.tokens.cacheRead).toBe(105_891);
-    expect(next?.cost).toBe(0.19);
+    expect(next?.cost).toBe(0);
+    expect(next?.costSource).toBe("unknown");
   });
 
   test("keeps Cloud Agent ids on the session title, not as a project", () => {
@@ -86,8 +90,8 @@ describe("Cursor usage CSV parser", () => {
     expect(rows[0]?.sessionId).toBe("cursor-cloud-bc-a");
     expect(rows[0]?.workspaceLabel).toBeUndefined();
     expect(rows[0]?.sessionTitle).toBe("Cloud agent bc-a");
-    expect(rows[1]?.cost).toBe(0.11);
-    expect(rows[1]?.costSource).toBe("providerReported");
+    expect(rows[1]?.cost).toBe(0);
+    expect(rows[1]?.costSource).toBe("unknown");
     expect(rows[1]?.workspaceLabel).toBeUndefined();
     expect(rows[1]?.sessionTitle).toBe("Cloud agent bc-b");
     expect(rows[1]?.sessionId).toBe("cursor-cloud-bc-b");
@@ -147,12 +151,18 @@ describe("Cursor usage CSV parser", () => {
     expect(rows[1]?.providerId).toBe("anthropic");
   });
 
-  test("treats explicit zero cost as provider-reported", () => {
+  test("leaves Cursor costs unpriced for API-equivalent estimation", () => {
     const csv = `Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
-"2026-08-18T12:00:00.000Z","On-Demand","gpt-5","No","10","5","20","3","38","$0.00"`;
-    const [row] = parseCursorCsv(csv, "usage.csv");
-    expect(row?.cost).toBe(0);
-    expect(row?.costSource).toBe("providerReported");
+"2026-08-18T12:00:00.000Z","On-Demand","gpt-5","No","10","5","20","3","38","$0.00"
+"2026-08-18T12:01:00.000Z","Included","claude-opus-4-8","No","10","5","20","3","38","Free"
+"2026-08-18T12:02:00.000Z","Included","grok-4.6","No","10","5","20","3","38","Included"`;
+    const rows = parseCursorCsv(csv, "usage.csv");
+    expect(rows.map((row) => row.cost)).toEqual([0, 0, 0]);
+    expect(rows.map((row) => row.costSource)).toEqual([
+      "unknown",
+      "unknown",
+      "unknown",
+    ]);
   });
 });
 
@@ -163,14 +173,18 @@ describe("Cursor desktop auth and multi-account sync", () => {
     expect(normalizeCursorSessionToken(`user_abc::${access}`)).toBe(
       `user_abc%3A%3A${access}`
     );
-    expect(deriveAccountId(`user_abc%3A%3A${access}`)).toBe("user_abc");
+    expect(deriveAccountId(`user_abc%3A%3A${access}`)).toMatch(
+      /^user_abc-[a-f0-9]{12}$/u
+    );
   });
 
   test("imports the signed-in Cursor desktop account from state.vscdb", async () => {
     const home = await temp();
-    const dir = join(home, ".config", "Cursor", "User", "globalStorage");
-    await mkdir(dir, { recursive: true });
-    const dbPath = join(dir, "state.vscdb");
+    const [dbPath] = cursorStateVscdbCandidates(home);
+    if (!dbPath) {
+      throw new Error("Expected a Cursor state database path");
+    }
+    await mkdir(dirname(dbPath), { recursive: true });
     const access = jwtForUser("user_desktop");
     const db = new Database(dbPath);
     db.run("CREATE TABLE ItemTable (key TEXT, value TEXT)");
@@ -189,12 +203,31 @@ describe("Cursor desktop auth and multi-account sync", () => {
     expect(sessions[0]?.email).toBe("work@example.com");
   });
 
+  test("keeps session tokens for the same Cursor user as separate accounts", async () => {
+    const root = await temp();
+    const paths = resolveCursorPaths(join(root, "data"), join(root, "home"));
+    const first = await upsertCursorAccount(
+      paths,
+      `user_same%3A%3A${jwtForUser("user_same")}`,
+      "first"
+    );
+    const second = await upsertCursorAccount(
+      paths,
+      `user_same%3A%3A${jwtForUser("user_same")}.different`,
+      "second"
+    );
+    expect(first).not.toBe(second);
+    expect(await listCursorAccounts(paths)).toHaveLength(2);
+    await removeCursorAccount(paths, first, true);
+    expect(await listCursorAccounts(paths)).toHaveLength(1);
+  });
+
   test("syncs usage CSV for every saved Cursor account", async () => {
     const root = await temp();
     const paths = resolveCursorPaths(join(root, "data"), join(root, "home"));
     const personal = jwtForUser("user_personal");
     const work = jwtForUser("user_work");
-    await upsertCursorAccount(
+    const personalAccountId = await upsertCursorAccount(
       paths,
       `user_personal%3A%3A${personal}`,
       "personal"
@@ -217,9 +250,9 @@ describe("Cursor desktop auth and multi-account sync", () => {
     expect(result.rows).toBe(2);
     const files = await listCursorUsageCsvFiles(paths);
     expect(files.some((path) => path.endsWith("usage.csv"))).toBe(true);
-    expect(files.some((path) => path.includes("usage.user_personal.csv"))).toBe(
-      true
-    );
+    expect(
+      files.some((path) => path.includes(`usage.${personalAccountId}.csv`))
+    ).toBe(true);
   });
 });
 

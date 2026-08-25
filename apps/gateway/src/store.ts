@@ -64,6 +64,7 @@ export interface ClientAutoUpdateSettings {
 }
 
 export interface CursorAccountStatus {
+  cloudAgentApiKeyConfigured?: boolean;
   id: string;
   isActive: boolean;
   label?: string;
@@ -82,13 +83,31 @@ export interface CursorDeviceStatus {
 export type CursorDeviceCommand =
   | { accountId: string; id: string; type: "remove-account" }
   | { accountId: string; id: string; type: "switch-account" }
-  | { id: string; label?: string; token: string; type: "add-account" }
+  | {
+      cloudAgentApiKey?: string;
+      id: string;
+      label?: string;
+      token: string;
+      type: "add-account";
+    }
+  | {
+      accountId: string;
+      cloudAgentApiKey: string;
+      id: string;
+      type: "set-api-key";
+    }
   | { id: string; type: "import-desktop" };
 
 export type CursorCommandDraft =
   | { accountId: string; type: "remove-account" }
   | { accountId: string; type: "switch-account" }
-  | { label?: string; token: string; type: "add-account" }
+  | {
+      cloudAgentApiKey?: string;
+      label?: string;
+      token: string;
+      type: "add-account";
+    }
+  | { accountId: string; cloudAgentApiKey: string; type: "set-api-key" }
   | { type: "import-desktop" };
 
 export interface CursorDashboardSettings {
@@ -124,6 +143,7 @@ const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
 };
 
 const cursorAccountStatusSchema = z.object({
+  cloudAgentApiKeyConfigured: z.boolean().optional(),
   id: z.string().trim().min(1).max(128),
   isActive: z.boolean(),
   label: z.string().trim().max(128).optional(),
@@ -163,10 +183,17 @@ const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
       type: z.literal("import-desktop"),
     }),
     z.object({
+      cloudAgentApiKey: z.string().max(512).optional(),
       id: z.string().min(1),
       label: z.string().max(128).optional(),
       token: z.string().min(1).max(8192),
       type: z.literal("add-account"),
+    }),
+    z.object({
+      accountId: z.string().min(1).max(128),
+      cloudAgentApiKey: z.string().min(1).max(512),
+      id: z.string().min(1),
+      type: z.literal("set-api-key"),
     }),
     z.object({
       accountId: z.string().min(1).max(128),
@@ -184,7 +211,7 @@ const DEFAULT_CURSOR_DASHBOARD_SETTINGS: CursorDashboardSettings = {
   includeAutomations: false,
   includeCloudAgents: true,
   syncIntervalMs: DEFAULT_CURSOR_SYNC_INTERVAL_MS,
-  useT3CodeLocalSessions: false,
+  useT3CodeLocalSessions: true,
 };
 
 const optionalTrimmed = (value: string | undefined): string | undefined => {

@@ -44,6 +44,7 @@ interface ClientAutoUpdateSettings {
 }
 
 interface CursorAccountStatus {
+  cloudAgentApiKeyConfigured?: boolean;
   id: string;
   isActive: boolean;
   label?: string;
@@ -80,6 +81,17 @@ const rangeLabel = (range: DateRange): string =>
   `${range.from.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })} – ${range.to.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" })}`;
 const isOnline = (lastSeen: number): boolean =>
   Date.now() - lastSeen < 5 * 60_000;
+
+type CursorDebugDetails = Record<
+  string,
+  boolean | number | string | string[] | undefined
+>;
+
+const cursorDebug = (event: string, details: CursorDebugDetails): void => {
+  if (import.meta.env.DEV) {
+    console.info(`[TokTracker Cursor dashboard] ${event}`, details);
+  }
+};
 
 const Calendar = ({
   range,
@@ -263,6 +275,7 @@ export const SettingsPage = ({
   const [cursorSettings, setCursorSettings] = useState<CursorOverview>();
   const [savingCursor, setSavingCursor] = useState(false);
   const [cursorToken, setCursorToken] = useState("");
+  const [cursorAccountApiKey, setCursorAccountApiKey] = useState("");
   const [cursorLabel, setCursorLabel] = useState("");
   const [cursorDeviceId, setCursorDeviceId] = useState("");
   const [cursorMessage, setCursorMessage] = useState("");
@@ -318,6 +331,13 @@ export const SettingsPage = ({
       }
     };
     void loadCursorSettings();
+    // Account actions are executed by the client asynchronously. Refresh this
+    // status while the page is open so "queued" becomes visible without a
+    // manual browser reload.
+    const refreshInterval = window.setInterval(() => {
+      void loadCursorSettings();
+    }, 5000);
+    return () => window.clearInterval(refreshInterval);
   }, [section]);
   useEffect(() => {
     if (section !== "devices") {
@@ -436,10 +456,17 @@ export const SettingsPage = ({
         headers: { "content-type": "application/json" },
         method: "PUT",
       });
-      if (response.ok) {
-        await refreshCursorSettings();
-        setCursorMessage("Saved Cursor sync settings.");
+      if (!response.ok) {
+        cursorDebug("settings save failed", { status: response.status });
+        setCursorMessage(`Could not save settings (HTTP ${response.status}).`);
+        return;
       }
+      cursorDebug("settings saved", {
+        apiKeyConfigured: Boolean(cursorSettings.cloudAgentApiKey?.trim()),
+        syncIntervalMs: cursorSettings.syncIntervalMs,
+      });
+      await refreshCursorSettings();
+      setCursorMessage("Saved Cursor sync settings.");
     } finally {
       setSavingCursor(false);
     }
@@ -454,11 +481,15 @@ export const SettingsPage = ({
       headers: { "content-type": "application/json" },
       method: "POST",
     });
-    if (response.ok) {
-      setCursorToken("");
-      setCursorMessage("Queued for the next client scan.");
-      await refreshCursorSettings();
+    if (!response.ok) {
+      cursorDebug("action queue failed", { path, status: response.status });
+      setCursorMessage(`Could not queue action (HTTP ${response.status}).`);
+      return;
     }
+    cursorDebug("action queued", { path });
+    setCursorToken("");
+    setCursorMessage("Queued for the next client scan.");
+    await refreshCursorSettings();
   };
   const revokeDashboardDevice = async (id: string): Promise<void> => {
     const response = await apiFetch(`/api/v1/dashboard-devices/${id}`, {
@@ -685,8 +716,10 @@ export const SettingsPage = ({
                     Use T3 Code for local Cursor sessions
                   </span>
                   <span className="block text-sm text-muted-foreground">
-                    Replace only local CSV rows with T3 Code sessions. Cloud
-                    Agents and Automations remain included.
+                    Enables local Cursor project names and session titles.
+                    Cursor&apos;s usage CSV has no project field, so T3 Code
+                    replaces only its local CSV rows; Cloud Agents and
+                    Automations remain included.
                   </span>
                 </span>
               </label>
@@ -744,6 +777,10 @@ export const SettingsPage = ({
                   }
                 />
               </label>
+              <p className="text-xs text-muted-foreground">
+                Cursor usage is estimated at public API token rates. Auto stays
+                at $0 because it has no single API model price.
+              </p>
               <label htmlFor="cursor-t3-home" className="grid gap-1 text-sm">
                 T3 Code home (optional)
                 <Input
@@ -807,8 +844,28 @@ export const SettingsPage = ({
                     <span>
                       {account.isActive ? "* " : ""}
                       {account.label ?? account.id}
+                      {account.cloudAgentApiKeyConfigured
+                        ? " · API key set"
+                        : " · no API key"}
                     </span>
                     <span className="flex gap-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        disabled={!cursorAccountApiKey}
+                        onClick={() =>
+                          queueCursorAction(
+                            "/api/v1/settings/cursor/accounts/api-key",
+                            {
+                              accountId: account.id,
+                              cloudAgentApiKey: cursorAccountApiKey,
+                              deviceId: device.deviceId,
+                            }
+                          )
+                        }
+                      >
+                        Set API key
+                      </Button>
                       {!account.isActive && (
                         <Button
                           size="xs"
@@ -891,6 +948,18 @@ export const SettingsPage = ({
               />
             </label>
             <label
+              htmlFor="cursor-account-api-key"
+              className="grid gap-1 text-sm"
+            >
+              Cloud Agents API key for this account (optional)
+              <Input
+                id="cursor-account-api-key"
+                type="password"
+                value={cursorAccountApiKey}
+                onChange={(event) => setCursorAccountApiKey(event.target.value)}
+              />
+            </label>
+            <label
               htmlFor="cursor-account-token"
               className="grid gap-1 text-sm"
             >
@@ -910,6 +979,7 @@ export const SettingsPage = ({
                 }
                 onClick={() =>
                   queueCursorAction("/api/v1/settings/cursor/accounts", {
+                    cloudAgentApiKey: cursorAccountApiKey,
                     deviceId: selectedDevice?.deviceId ?? cursorDeviceId,
                     label: cursorLabel,
                     token: cursorToken,

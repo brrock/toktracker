@@ -23,6 +23,11 @@ import type {
 } from "./store";
 
 const MAX_BODY_BYTES = 16 * 1024 * 1024;
+const cursorDebug = (...details: unknown[]): void => {
+  if (process.env.TOKTRACKER_DEV === "1") {
+    console.info("[TokTracker Cursor gateway]", ...details);
+  }
+};
 const MAX_PAIRING_BODY_BYTES = 4096;
 const MAX_FILTER_VALUES = 100;
 const MAX_PAGE_SIZE = 200;
@@ -80,6 +85,7 @@ const cursorCommandAckSchema = z.object({
 });
 const cursorAccountActionSchema = z.object({
   accountId: z.string().trim().min(1).max(128).optional(),
+  cloudAgentApiKey: z.string().trim().min(1).max(512).optional(),
   deviceId: z.string().trim().min(1).max(128),
   label: z.string().trim().max(128).optional(),
   token: z.string().trim().min(1).max(8192).optional(),
@@ -296,9 +302,15 @@ export const createApp = (
   app.get("/api/v1/client-cursor-policy", (context) => {
     const deviceId = context.req.query("deviceId")?.trim() ?? "";
     const settings = store.cursorDashboardSettings();
+    const commands = deviceId ? store.cursorCommandsForDevice(deviceId) : [];
+    cursorDebug("policy requested", {
+      apiKeyConfigured: Boolean(settings.cloudAgentApiKey),
+      commandTypes: commands.map((command) => command.type),
+      deviceId,
+    });
     return context.json({
       cloudAgentApiKey: settings.cloudAgentApiKey,
-      commands: deviceId ? store.cursorCommandsForDevice(deviceId) : [],
+      commands,
       enabled: settings.enabled,
       includeAutomations: settings.includeAutomations,
       includeCloudAgents: settings.includeCloudAgents,
@@ -314,6 +326,12 @@ export const createApp = (
     } catch {
       return context.json({ error: "Invalid Cursor status" }, 400);
     }
+    cursorDebug("status received", {
+      accounts: status.accounts.map((account) => account.id),
+      desktopSignedIn: status.desktopSignedIn,
+      deviceId: status.deviceId,
+      lastError: status.lastError,
+    });
     return context.json(store.recordCursorDeviceStatus(status));
   });
   app.post("/api/v1/client-cursor-commands/ack", async (context) => {
@@ -326,9 +344,13 @@ export const createApp = (
         400
       );
     }
-    return context.json({
-      removed: store.ackCursorCommands(body.deviceId, body.commandIds),
+    const removed = store.ackCursorCommands(body.deviceId, body.commandIds);
+    cursorDebug("commands acknowledged", {
+      commandCount: body.commandIds.length,
+      deviceId: body.deviceId,
+      removed,
     });
+    return context.json({ removed });
   });
   app.get("/api/v1/settings/cursor", (context) =>
     context.json(store.cursorDashboardOverview())
@@ -340,6 +362,11 @@ export const createApp = (
     } catch {
       return context.json({ error: "Invalid Cursor settings" }, 400);
     }
+    cursorDebug("settings saved", {
+      apiKeyConfigured: Boolean(settings.cloudAgentApiKey?.trim()),
+      enabled: settings.enabled,
+      syncIntervalMs: settings.syncIntervalMs,
+    });
     return context.json(
       store.setCursorDashboardSettings({
         cloudAgentApiKey: settings.cloudAgentApiKey,
@@ -360,6 +387,10 @@ export const createApp = (
       return context.json({ error: "Invalid Cursor account request" }, 400);
     }
     store.enqueueCursorCommand(body.deviceId, { type: "import-desktop" });
+    cursorDebug("command queued", {
+      deviceId: body.deviceId,
+      type: "import-desktop",
+    });
     return context.json({ ok: true });
   });
   app.post("/api/v1/settings/cursor/accounts", async (context) => {
@@ -373,9 +404,36 @@ export const createApp = (
       return context.json({ error: "A session token is required" }, 400);
     }
     store.enqueueCursorCommand(body.deviceId, {
+      cloudAgentApiKey: body.cloudAgentApiKey,
       label: body.label,
       token: body.token,
       type: "add-account",
+    });
+    cursorDebug("command queued", {
+      deviceId: body.deviceId,
+      label: body.label,
+      tokenLength: body.token.length,
+      type: "add-account",
+    });
+    return context.json({ ok: true });
+  });
+  app.post("/api/v1/settings/cursor/accounts/api-key", async (context) => {
+    let body: z.infer<typeof cursorAccountActionSchema>;
+    try {
+      body = cursorAccountActionSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cursor account request" }, 400);
+    }
+    if (!body.accountId || !body.cloudAgentApiKey) {
+      return context.json(
+        { error: "An account and API key are required" },
+        400
+      );
+    }
+    store.enqueueCursorCommand(body.deviceId, {
+      accountId: body.accountId,
+      cloudAgentApiKey: body.cloudAgentApiKey,
+      type: "set-api-key",
     });
     return context.json({ ok: true });
   });
@@ -391,6 +449,11 @@ export const createApp = (
     }
     store.enqueueCursorCommand(body.deviceId, {
       accountId: body.accountId,
+      type: "remove-account",
+    });
+    cursorDebug("command queued", {
+      accountId: body.accountId,
+      deviceId: body.deviceId,
       type: "remove-account",
     });
     return context.json({ ok: true });

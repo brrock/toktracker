@@ -26,6 +26,7 @@ export const clampCursorSyncIntervalMs = (value: number): number => {
 };
 
 export interface CursorAccount {
+  cloudAgentApiKey?: string;
   createdAt: string;
   label?: string;
   sessionToken: string;
@@ -35,10 +36,13 @@ export interface CursorAccount {
 export interface CursorAccountStore {
   accounts: Record<string, CursorAccount>;
   activeAccountId: string;
+  /** Desktop sessions explicitly removed by the user; do not re-import them. */
+  ignoredSessionTokens?: string[];
   version: 1;
 }
 
 export interface CursorAccountInfo {
+  cloudAgentApiKeyConfigured: boolean;
   createdAt: string;
   id: string;
   isActive: boolean;
@@ -145,11 +149,10 @@ export const normalizeCursorSessionToken = (token: string): string => {
 
 export const deriveAccountId = (sessionToken: string): string => {
   const userId = extractUserIdFromSessionToken(sessionToken);
-  if (userId) {
-    return userId;
-  }
   const hash = Bun.hash(sessionToken).toString(16).slice(0, 12);
-  return `anon-${hash}`;
+  // A Cursor user can have more than one valid session token. The token hash
+  // keeps those credentials independent instead of silently overwriting one.
+  return `${userId ?? "anon"}-${hash}`;
 };
 
 export const cursorStateVscdbCandidates = (homeDir: string): string[] => {
@@ -260,6 +263,7 @@ export const readDesktopCursorSessions = (
 const emptyStore = (): CursorAccountStore => ({
   accounts: {},
   activeAccountId: "",
+  ignoredSessionTokens: [],
   version: 1,
 });
 
@@ -276,6 +280,7 @@ export const loadCursorAccountStore = async (
       if (!parsed.accounts[parsed.activeAccountId]) {
         parsed.activeAccountId = Object.keys(parsed.accounts)[0] ?? "";
       }
+      parsed.ignoredSessionTokens ??= [];
       return parsed;
     }
   } catch {
@@ -298,11 +303,28 @@ export const saveCursorAccountStore = async (
 export const upsertCursorAccount = async (
   paths: CursorPaths,
   sessionToken: string,
-  label?: string
+  label?: string,
+  cloudAgentApiKey?: string
 ): Promise<string> => {
   const token = normalizeCursorSessionToken(sessionToken);
   const accountId = deriveAccountId(token);
   const store = await loadCursorAccountStore(paths);
+  store.ignoredSessionTokens = (store.ignoredSessionTokens ?? []).filter(
+    (ignoredToken) => ignoredToken !== token
+  );
+  // Move credentials written by versions which keyed accounts only by user ID.
+  // This avoids a duplicate-label error during the first desktop re-import.
+  const legacyAccount = Object.entries(store.accounts).find(
+    ([id, account]) => id !== accountId && account.sessionToken === token
+  );
+  if (legacyAccount) {
+    const [legacyId, account] = legacyAccount;
+    store.accounts[accountId] = account;
+    delete store.accounts[legacyId];
+    if (store.activeAccountId === legacyId) {
+      store.activeAccountId = accountId;
+    }
+  }
   if (label) {
     const needle = label.trim().toLowerCase();
     for (const [id, account] of Object.entries(store.accounts)) {
@@ -313,6 +335,7 @@ export const upsertCursorAccount = async (
   }
   const existing = store.accounts[accountId];
   store.accounts[accountId] = {
+    cloudAgentApiKey: cloudAgentApiKey?.trim() || existing?.cloudAgentApiKey,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
     label: label ?? existing?.label,
     sessionToken: token,
@@ -328,7 +351,12 @@ export const importDesktopCursorAccounts = async (
   paths: CursorPaths
 ): Promise<string[]> => {
   const imported: string[] = [];
+  const store = await loadCursorAccountStore(paths);
+  const ignored = new Set(store.ignoredSessionTokens);
   for (const session of readDesktopCursorSessions(paths.homeDir)) {
+    if (ignored.has(session.sessionToken)) {
+      continue;
+    }
     const id = await upsertCursorAccount(
       paths,
       session.sessionToken,
@@ -339,12 +367,33 @@ export const importDesktopCursorAccounts = async (
   return imported;
 };
 
+export const activeCursorCloudAgentApiKey = async (
+  paths: CursorPaths
+): Promise<string | undefined> => {
+  const store = await loadCursorAccountStore(paths);
+  return store.accounts[store.activeAccountId]?.cloudAgentApiKey;
+};
+
+export const cursorCloudAgentApiKeys = async (
+  paths: CursorPaths
+): Promise<{ activeAccountId: string; keys: Record<string, string> }> => {
+  const store = await loadCursorAccountStore(paths);
+  const keys: Record<string, string> = {};
+  for (const [accountId, account] of Object.entries(store.accounts)) {
+    if (account.cloudAgentApiKey) {
+      keys[accountId] = account.cloudAgentApiKey;
+    }
+  }
+  return { activeAccountId: store.activeAccountId, keys };
+};
+
 export const listCursorAccounts = async (
   paths: CursorPaths
 ): Promise<CursorAccountInfo[]> => {
   const store = await loadCursorAccountStore(paths);
   return Object.entries(store.accounts)
     .map(([id, account]) => ({
+      cloudAgentApiKeyConfigured: Boolean(account.cloudAgentApiKey),
       createdAt: account.createdAt,
       id,
       isActive: id === store.activeAccountId,
@@ -373,6 +422,24 @@ const resolveAccountId = (
   )?.[0];
 };
 
+export const setCursorCloudAgentApiKey = async (
+  paths: CursorPaths,
+  nameOrId: string,
+  cloudAgentApiKey: string
+): Promise<void> => {
+  const store = await loadCursorAccountStore(paths);
+  const resolved = resolveAccountId(store, nameOrId);
+  if (!resolved) {
+    throw new Error(`Cursor account not found: ${nameOrId}`);
+  }
+  const account = store.accounts[resolved];
+  if (!account) {
+    throw new Error(`Cursor account not found: ${nameOrId}`);
+  }
+  account.cloudAgentApiKey = cloudAgentApiKey.trim() || undefined;
+  await saveCursorAccountStore(paths, store);
+};
+
 export const setActiveCursorAccount = async (
   paths: CursorPaths,
   nameOrId: string
@@ -397,7 +464,13 @@ export const removeCursorAccount = async (
   if (!resolved) {
     throw new Error(`Cursor account not found: ${nameOrId}`);
   }
+  const removedToken = store.accounts[resolved]?.sessionToken;
   delete store.accounts[resolved];
+  if (removedToken) {
+    store.ignoredSessionTokens = [
+      ...new Set([...(store.ignoredSessionTokens ?? []), removedToken]),
+    ];
+  }
   if (purgeCache) {
     const active = join(paths.cacheDir, "usage.csv");
     const named = join(
@@ -414,10 +487,6 @@ export const removeCursorAccount = async (
   }
   if (store.activeAccountId === resolved) {
     store.activeAccountId = Object.keys(store.accounts)[0] ?? "";
-  }
-  if (Object.keys(store.accounts).length === 0) {
-    await Bun.write(paths.credentialsPath, "");
-    return;
   }
   await saveCursorAccountStore(paths, store);
 };
