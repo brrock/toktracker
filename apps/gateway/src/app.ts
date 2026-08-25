@@ -345,10 +345,10 @@ export const createApp = (
         cloudAgentApiKey: settings.cloudAgentApiKey,
         enabled: settings.enabled,
         includeAutomations: settings.includeAutomations ?? false,
-        includeCloudAgents: settings.includeCloudAgents ?? false,
+        includeCloudAgents: settings.includeCloudAgents ?? true,
         syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
         t3Home: settings.t3Home,
-        useT3CodeLocalSessions: settings.useT3CodeLocalSessions ?? true,
+        useT3CodeLocalSessions: settings.useT3CodeLocalSessions ?? false,
       })
     );
   });

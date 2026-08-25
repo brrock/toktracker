@@ -83,8 +83,8 @@ interface CursorIngestPolicy {
 
 const cursorIngestPolicy: CursorIngestPolicy = {
   includeAutomations: false,
-  includeCloudAgents: false,
-  useT3CodeLocalSessions: true,
+  includeCloudAgents: true,
+  useT3CodeLocalSessions: false,
 };
 
 const optionalStringSchema = z.string();

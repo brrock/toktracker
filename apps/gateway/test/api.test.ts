@@ -289,9 +289,9 @@ describe("gateway API", () => {
     expect(await saved.json()).toEqual({
       enabled: true,
       includeAutomations: false,
-      includeCloudAgents: false,
+      includeCloudAgents: true,
       syncIntervalMs: 120_000,
-      useT3CodeLocalSessions: true,
+      useT3CodeLocalSessions: false,
     });
 
     const queued = await app.request("/api/v1/settings/cursor/accounts", {

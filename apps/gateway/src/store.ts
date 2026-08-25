@@ -182,9 +182,9 @@ const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
 const DEFAULT_CURSOR_DASHBOARD_SETTINGS: CursorDashboardSettings = {
   enabled: true,
   includeAutomations: false,
-  includeCloudAgents: false,
+  includeCloudAgents: true,
   syncIntervalMs: DEFAULT_CURSOR_SYNC_INTERVAL_MS,
-  useT3CodeLocalSessions: true,
+  useT3CodeLocalSessions: false,
 };
 
 const optionalTrimmed = (value: string | undefined): string | undefined => {
@@ -201,14 +201,12 @@ const normalizeCursorDashboardSettings = (
       ? previous?.cloudAgentApiKey
       : optionalTrimmed(input.cloudAgentApiKey),
   enabled: input.enabled,
-  includeAutomations:
-    input.includeAutomations ??
-    previous?.includeAutomations ??
-    DEFAULT_CURSOR_DASHBOARD_SETTINGS.includeAutomations,
-  includeCloudAgents:
-    input.includeCloudAgents ??
-    previous?.includeCloudAgents ??
-    DEFAULT_CURSOR_DASHBOARD_SETTINGS.includeCloudAgents,
+  includeAutomations: input.useT3CodeLocalSessions
+    ? true
+    : (input.includeAutomations ??
+      previous?.includeAutomations ??
+      DEFAULT_CURSOR_DASHBOARD_SETTINGS.includeAutomations),
+  includeCloudAgents: true,
   syncIntervalMs: clampCursorSyncIntervalMs(input.syncIntervalMs),
   t3Home:
     input.t3Home === undefined

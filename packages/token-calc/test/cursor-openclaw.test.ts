@@ -124,6 +124,18 @@ describe("Cursor usage CSV parser", () => {
     expect(automations[0]?.sessionId).toBe("cursor-automation-cc-a");
   });
 
+  test("uses local CSV and Cloud Agents by default, not Automations", () => {
+    const csv = `Date,Cloud Agent ID,Automation ID,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
+"2026-04-09T20:01:10.528Z","bc-a","","Included","composer-2","Yes","0","1","0","1","2","0.01"
+"2026-04-09T18:02:13.576Z","","cc-a","On-Demand","composer-2","Yes","0","1","0","1","2","0.02"
+"2026-04-09T16:00:00.000Z","","","On-Demand","composer-2","Yes","0","1","0","1","2","0.03"`;
+    const rows = parseCursorCsv(csv, "usage.csv");
+    expect(rows.map((row) => row.sessionId)).toEqual([
+      "cursor-cloud-bc-a",
+      "cursor-active-2026-04-09T16:00:00.000Z",
+    ]);
+  });
+
   test("splits Cursor provider prefixes and reasoning depth from model ids", () => {
     const csv = `Date,Kind,Model,Max Mode,Input (w/ Cache Write),Input (w/o Cache Write),Cache Read,Output Tokens,Total Tokens,Cost
 "2026-08-24T12:00:00.000Z","On-Demand","cursor-grok-4.6-medium","No","10","5","20","3","38","0.20"

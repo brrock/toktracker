@@ -202,7 +202,7 @@ export function parseCursorCsv(
     if (isCloud && options.includeCloudAgents === false) {
       continue;
     }
-    if (isAutomation && options.includeAutomations === false) {
+    if (isAutomation && options.includeAutomations !== true) {
       continue;
     }
     if (isLocal && options.skipLocalRows) {

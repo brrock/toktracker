@@ -674,6 +674,8 @@ export const SettingsPage = ({
                   onCheckedChange={(checked) =>
                     setCursorSettings({
                       ...cursorSettings,
+                      includeAutomations: checked === true,
+                      includeCloudAgents: true,
                       useT3CodeLocalSessions: checked === true,
                     })
                   }
@@ -683,8 +685,8 @@ export const SettingsPage = ({
                     Use T3 Code for local Cursor sessions
                   </span>
                   <span className="block text-sm text-muted-foreground">
-                    Read workspace and title from T3 Code’s SQLite state instead
-                    of local rows in Cursor’s usage CSV.
+                    Replace only local CSV rows with T3 Code sessions. Cloud
+                    Agents and Automations remain included.
                   </span>
                 </span>
               </label>
@@ -695,20 +697,15 @@ export const SettingsPage = ({
                 <Checkbox
                   id="cursor-include-cloud"
                   checked={cursorSettings.includeCloudAgents}
-                  onCheckedChange={(checked) =>
-                    setCursorSettings({
-                      ...cursorSettings,
-                      includeCloudAgents: checked === true,
-                    })
-                  }
+                  disabled
                 />
                 <span>
                   <span className="block text-sm font-medium">
                     Include Cloud Agents
                   </span>
                   <span className="block text-sm text-muted-foreground">
-                    Keep Cloud Agent rows from the usage CSV and attach their
-                    git workspace from the Cloud Agents API.
+                    Cloud Agent rows are included from the usage CSV and their
+                    git workspace is fetched from the Cloud Agents API.
                   </span>
                 </span>
               </label>
@@ -719,19 +716,15 @@ export const SettingsPage = ({
                 <Checkbox
                   id="cursor-include-automations"
                   checked={cursorSettings.includeAutomations}
-                  onCheckedChange={(checked) =>
-                    setCursorSettings({
-                      ...cursorSettings,
-                      includeAutomations: checked === true,
-                    })
-                  }
+                  disabled
                 />
                 <span>
                   <span className="block text-sm font-medium">
                     Include Automations
                   </span>
                   <span className="block text-sm text-muted-foreground">
-                    Keep Automation rows from the usage CSV.
+                    Automations are included when T3 Code local sessions are
+                    enabled.
                   </span>
                 </span>
               </label>
