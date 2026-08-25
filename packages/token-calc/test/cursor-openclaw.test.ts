@@ -245,6 +245,7 @@ describe("Cursor desktop auth and multi-account sync", () => {
     const result = await syncCursorUsageCaches(paths, {
       fetchImpl,
       force: true,
+      importDesktop: false,
     });
     expect(result.synced).toBe(true);
     expect(result.rows).toBe(2);
