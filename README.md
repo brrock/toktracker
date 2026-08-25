@@ -63,7 +63,7 @@ For prereleases, add `--nightly` on macOS/Linux or `-Nightly` in PowerShell.
 | -------------- | --------------------------------------------------------- |
 | Claude Code    | JSONL sessions                                            |
 | Codex          | JSONL sessions and local titles                           |
-| Cursor IDE     | Usage CSV via desktop login (multi-account)               |
+| Cursor         | Usage CSV via session token and usage from t3code         |
 | Pi             | JSONL sessions                                            |
 | OpenCode       | Legacy JSON and SQLite v1/v2                              |
 | OpenClaw       | Agent JSONL transcripts                                   |
