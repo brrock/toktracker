@@ -9,8 +9,11 @@ const RELEASE_HEADER = /^## v(?<version>\d+\.\d+\.\d+(?:-[a-zA-Z0-9.]+)?)$/mu;
 const COMPARE_CHANGES = /\n\[compare changes\]\([^)]+\)\n/u;
 const GITHUB_REPOSITORY_URL =
   /^https:\/\/github\.com\/(?<repository>[^/]+\/[^/]+)\/(?:commit|pull)\//u;
+const CURSOR_AGENT_MARKER = "CURSOR_AGENT_PR_BODY_BEGIN";
 
 const githubAuthorCache = new Map<string, string | undefined>();
+const githubValueCache = new Map<string, string | undefined>();
+const pullRequestMarkerCache = new Map<string, string | undefined>();
 
 const changelogPath = argv.at(2);
 if (!changelogPath) {
@@ -45,6 +48,26 @@ const contributorForCommit = (hash: string): string | undefined => {
 const repositoryForUrl = (url: string): string | undefined =>
   url.match(GITHUB_REPOSITORY_URL)?.groups?.repository;
 
+const githubValue = (endpoint: string, query: string): string | undefined => {
+  const cacheKey = `${endpoint}:${query}`;
+  const cachedValue = githubValueCache.get(cacheKey);
+  if (cachedValue !== undefined || githubValueCache.has(cacheKey)) {
+    return cachedValue;
+  }
+
+  const result = Bun.spawnSync({
+    cmd: ["gh", "api", endpoint, "--jq", query],
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const value =
+    result.exitCode === 0
+      ? new TextDecoder().decode(result.stdout).trim()
+      : undefined;
+  githubValueCache.set(cacheKey, value);
+  return value;
+};
+
 const githubAuthor = (
   endpoint: string,
   query = ".user.login // empty"
@@ -55,15 +78,7 @@ const githubAuthor = (
     return cachedAuthor;
   }
 
-  const result = Bun.spawnSync({
-    cmd: ["gh", "api", endpoint, "--jq", query],
-    stderr: "pipe",
-    stdout: "pipe",
-  });
-  const username =
-    result.exitCode === 0
-      ? new TextDecoder().decode(result.stdout).trim()
-      : undefined;
+  const username = githubValue(endpoint, query);
   const author = username
     ? `[@${username}](https://github.com/${username})`
     : undefined;
@@ -81,15 +96,49 @@ const authorForPullRequest = (
     : undefined;
 };
 
-const authorForCommit = (url: string, hash: string): string | undefined => {
+const pullRequestForCommit = (
+  url: string,
+  hash: string
+): string | undefined => {
   const repository = repositoryForUrl(url);
-  const pullRequestAuthor = repository
-    ? githubAuthor(
+  return repository
+    ? githubValue(
         `repos/${repository}/commits/${hash}/pulls`,
-        ".[0].user.login // empty"
+        ".[0].number // empty"
       )
     : undefined;
-  return pullRequestAuthor ?? contributorForCommit(hash);
+};
+
+const markerForPullRequest = (
+  url: string,
+  number: string
+): string | undefined => {
+  const repository = repositoryForUrl(url);
+  if (!repository) {
+    return undefined;
+  }
+
+  const endpoint = `repos/${repository}/pulls/${number}`;
+  const cachedMarker = pullRequestMarkerCache.get(endpoint);
+  if (cachedMarker !== undefined || pullRequestMarkerCache.has(endpoint)) {
+    return cachedMarker;
+  }
+
+  const result = Bun.spawnSync({
+    cmd: ["gh", "api", endpoint, "--jq", '[.head.ref, .body] | join("\\n")'],
+    stderr: "pipe",
+    stdout: "pipe",
+  });
+  const pullRequestDetails =
+    result.exitCode === 0 ? new TextDecoder().decode(result.stdout) : undefined;
+  let marker: string | undefined;
+  if (pullRequestDetails?.startsWith("t3code/")) {
+    marker = "[T3 Code]";
+  } else if (pullRequestDetails?.includes(CURSOR_AGENT_MARKER)) {
+    marker = "[Cursor Agent]";
+  }
+  pullRequestMarkerCache.set(endpoint, marker);
+  return marker;
 };
 
 const addAuthorToEntry = (entry: string): string => {
@@ -97,7 +146,8 @@ const addAuthorToEntry = (entry: string): string => {
   if (pullRequest?.groups) {
     const { number, url } = pullRequest.groups;
     const author = authorForPullRequest(url, number);
-    return author ? `${entry} — ${author}` : entry;
+    const marker = markerForPullRequest(url, number);
+    return author ? `${entry} — ${author}${marker ? ` ${marker}` : ""}` : entry;
   }
 
   const commit = entry.match(COMMIT_REFERENCE);
@@ -106,8 +156,14 @@ const addAuthorToEntry = (entry: string): string => {
   }
 
   const { hash, url } = commit.groups;
-  const author = authorForCommit(url, hash);
-  return author ? `${entry} — ${author}` : entry;
+  const pullRequestNumber = pullRequestForCommit(url, hash);
+  const author = pullRequestNumber
+    ? authorForPullRequest(url, pullRequestNumber)
+    : contributorForCommit(hash);
+  const marker = pullRequestNumber
+    ? markerForPullRequest(url, pullRequestNumber)
+    : undefined;
+  return author ? `${entry} — ${author}${marker ? ` ${marker}` : ""}` : entry;
 };
 
 const rawChangelog = await Bun.file(changelogPath).text();
