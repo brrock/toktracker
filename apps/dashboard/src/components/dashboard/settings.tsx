@@ -80,6 +80,10 @@ interface CursorOverview {
   t3Home?: string;
   useT3CodeLocalSessions: boolean;
 }
+interface CloudAgentAccount {
+  id: string;
+  label: string;
+}
 type CursorSettings = Omit<CursorOverview, "devices">;
 interface CopilotSettings {
   enabled: boolean;
@@ -89,6 +93,7 @@ interface CopilotSettings {
   otelExporterFile?: string;
 }
 interface ProviderOverview {
+  cloudAgentAccounts: CloudAgentAccount[];
   copilot: CopilotSettings;
   cursor: CursorSettings;
   devices: CursorDeviceOverview[];
@@ -292,6 +297,8 @@ export const SettingsPage = ({
   const [providerSettings, setProviderSettings] = useState<ProviderOverview>();
   const [savingCursor, setSavingCursor] = useState(false);
   const [cursorToken, setCursorToken] = useState("");
+  const [cloudAgentLabel, setCloudAgentLabel] = useState("");
+  const [cloudAgentKey, setCloudAgentKey] = useState("");
   const [cursorAccountApiKey, setCursorAccountApiKey] = useState("");
   const [cursorLabel, setCursorLabel] = useState("");
   const [cursorDeviceId, setCursorDeviceId] = useState("");
@@ -510,6 +517,56 @@ export const SettingsPage = ({
     setCursorToken("");
     setCursorMessage("Queued for the next client scan.");
     await refreshCursorSettings();
+  };
+  const addCloudAgentAccount = async (): Promise<void> => {
+    if (!cloudAgentLabel.trim() || !cloudAgentKey.trim()) {
+      return;
+    }
+    setCursorMessage("");
+    const response = await apiFetch(
+      "/api/v1/settings/cursor/cloud-agent-accounts",
+      {
+        body: JSON.stringify({
+          apiKey: cloudAgentKey,
+          label: cloudAgentLabel,
+        }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }
+    );
+    // SAFETY: this endpoint returns the documented small sync-result object.
+    const body = (await response.json()) as { agents?: number; error?: string };
+    if (!response.ok) {
+      setCursorMessage(body.error ?? "Could not add Cloud Agent account.");
+      return;
+    }
+    setCloudAgentKey("");
+    setCloudAgentLabel("");
+    setCursorMessage(`Synced ${body.agents ?? 0} Cloud Agent(s).`);
+    await refreshCursorSettings();
+  };
+  const syncCloudAgentAccount = async (id: string): Promise<void> => {
+    setCursorMessage("");
+    const response = await apiFetch(
+      `/api/v1/settings/cursor/cloud-agent-accounts/${id}/sync`,
+      { method: "POST" }
+    );
+    // SAFETY: this endpoint returns the documented small sync-result object.
+    const body = (await response.json()) as { agents?: number; error?: string };
+    setCursorMessage(
+      response.ok
+        ? `Synced ${body.agents ?? 0} Cloud Agent(s).`
+        : (body.error ?? "Cloud Agent sync failed.")
+    );
+  };
+  const removeCloudAgentAccount = async (id: string): Promise<void> => {
+    const response = await apiFetch(
+      `/api/v1/settings/cursor/cloud-agent-accounts/${id}`,
+      { method: "DELETE" }
+    );
+    if (response.ok) {
+      await refreshCursorSettings();
+    }
   };
   const revokeDashboardDevice = async (id: string): Promise<void> => {
     const response = await apiFetch(`/api/v1/dashboard-devices/${id}`, {
@@ -924,31 +981,9 @@ export const SettingsPage = ({
                       </span>
                     </span>
                   </label>
-                  <label
-                    htmlFor="cursor-api-key"
-                    className="grid gap-1 text-sm"
-                  >
-                    Cloud Agents API key
-                    <Input
-                      id="cursor-api-key"
-                      type="password"
-                      autoComplete="off"
-                      placeholder="Cursor Dashboard → API Keys"
-                      value={providerSettings.cursor.cloudAgentApiKey ?? ""}
-                      onChange={(event) =>
-                        setProviderSettings({
-                          ...providerSettings,
-                          cursor: {
-                            ...providerSettings.cursor,
-                            cloudAgentApiKey: event.target.value,
-                          },
-                        })
-                      }
-                    />
-                  </label>
                   <p className="text-xs text-muted-foreground">
-                    Cursor usage is estimated at public API token rates. Auto
-                    stays at $0 because it has no single API model price.
+                    Local clients send Cursor session and project metadata from
+                    T3 Code. Cloud Agent keys are managed by this gateway below.
                   </p>
                   <label
                     htmlFor="cursor-t3-home"
@@ -978,6 +1013,77 @@ export const SettingsPage = ({
                     {savingCursor ? "Saving…" : "Save provider settings"}
                   </Button>
                 </div>
+              )}
+            </div>
+            <div className="mt-6 rounded-lg border bg-card p-4">
+              <h3 className="font-medium">Cloud Agent accounts</h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                Keys stay on this gateway. Sync imports Cloud Agent projects,
+                names, and activity; Cursor does not expose token counts through
+                this API.
+              </p>
+              <div className="mt-4 space-y-2">
+                {providerSettings?.cloudAgentAccounts.map((account) => (
+                  <div
+                    key={account.id}
+                    className="flex items-center justify-between gap-3 rounded-md border p-3 text-sm"
+                  >
+                    <span>{account.label}</span>
+                    <span className="flex gap-2">
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => syncCloudAgentAccount(account.id)}
+                      >
+                        Sync
+                      </Button>
+                      <Button
+                        size="xs"
+                        variant="outline"
+                        onClick={() => removeCloudAgentAccount(account.id)}
+                      >
+                        Remove
+                      </Button>
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <div className="mt-4 grid gap-3">
+                <label
+                  htmlFor="cloud-agent-label"
+                  className="grid gap-1 text-sm"
+                >
+                  Account label
+                  <Input
+                    id="cloud-agent-label"
+                    placeholder="Work"
+                    value={cloudAgentLabel}
+                    onChange={(event) => setCloudAgentLabel(event.target.value)}
+                  />
+                </label>
+                <label htmlFor="cloud-agent-key" className="grid gap-1 text-sm">
+                  Cloud Agents API key
+                  <Input
+                    id="cloud-agent-key"
+                    type="password"
+                    autoComplete="off"
+                    placeholder="Cursor Dashboard → API Keys"
+                    value={cloudAgentKey}
+                    onChange={(event) => setCloudAgentKey(event.target.value)}
+                  />
+                </label>
+                <Button
+                  size="sm"
+                  disabled={!cloudAgentLabel.trim() || !cloudAgentKey.trim()}
+                  onClick={addCloudAgentAccount}
+                >
+                  Add and sync account
+                </Button>
+              </div>
+              {cursorMessage && (
+                <p className="mt-3 text-sm text-muted-foreground">
+                  {cursorMessage}
+                </p>
               )}
             </div>
             <div className="mt-6 rounded-lg border bg-card p-4">

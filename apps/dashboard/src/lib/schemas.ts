@@ -135,10 +135,16 @@ const cursorSettingsSchema = z.object({
   t3Home: z.string().optional(),
   useT3CodeLocalSessions: z.boolean().optional().default(true),
 });
+export const cloudAgentAccountOverviewSchema = z.object({
+  id: z.string(),
+  label: z.string(),
+});
 export const cursorDashboardOverviewSchema = cursorSettingsSchema.extend({
+  cloudAgentAccounts: z.array(cloudAgentAccountOverviewSchema).default([]),
   devices: z.array(cursorDeviceOverviewSchema),
 });
 export const providerDashboardOverviewSchema = z.object({
+  cloudAgentAccounts: z.array(cloudAgentAccountOverviewSchema).default([]),
   copilot: z.object({
     enabled: z.boolean(),
     importDesktop: z.boolean(),
