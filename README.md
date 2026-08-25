@@ -166,7 +166,7 @@ Open **http://localhost:5173**. Development mode starts all three pieces:
 | Gateway | http://localhost:4310 | API and local database |
 | Client | — | Scans sessions, imports Cursor desktop auth, and uploads changes |
 
-`bun run dev` imports the signed-in Cursor desktop account automatically. Open **Settings → Cursor** to check auth status, add accounts, and change the usage sync interval.
+`bun run dev` imports the signed-in Cursor desktop account automatically. Open **Settings → Providers** to manage Cursor accounts and sync settings, plus GitHub Copilot OTEL, Desktop, and VS Code imports. During client setup, choose whether the gateway can control these provider settings for that client.
 
 Development data is stored in `.dev-data/` and ignored by Git. Reset it with:
 

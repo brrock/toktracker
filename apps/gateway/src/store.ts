@@ -120,6 +120,19 @@ export interface CursorDashboardSettings {
   useT3CodeLocalSessions: boolean;
 }
 
+export interface CopilotDashboardSettings {
+  enabled: boolean;
+  importDesktop: boolean;
+  importOtel: boolean;
+  importVsCode: boolean;
+  otelExporterFile?: string;
+}
+
+export interface ProviderDashboardSettings {
+  copilot: CopilotDashboardSettings;
+  cursor: CursorDashboardSettings;
+}
+
 export interface CursorDashboardOverview extends CursorDashboardSettings {
   devices: (CursorDeviceStatus & {
     name?: string;
@@ -176,6 +189,17 @@ const cursorDashboardSettingsSchema = z.object({
   t3Home: z.string().max(1024).optional(),
   useT3CodeLocalSessions: z.boolean().optional(),
 });
+const copilotDashboardSettingsSchema = z.object({
+  enabled: z.boolean().optional(),
+  importDesktop: z.boolean().optional(),
+  importOtel: z.boolean().optional(),
+  importVsCode: z.boolean().optional(),
+  otelExporterFile: z.string().max(1024).optional(),
+});
+const providerDashboardSettingsSchema = z.object({
+  copilot: copilotDashboardSettingsSchema.optional(),
+  cursor: cursorDashboardSettingsSchema.optional(),
+});
 const cursorDeviceCommandSchema: z.ZodType<CursorDeviceCommand> =
   z.discriminatedUnion("type", [
     z.object({
@@ -213,6 +237,12 @@ const DEFAULT_CURSOR_DASHBOARD_SETTINGS: CursorDashboardSettings = {
   syncIntervalMs: DEFAULT_CURSOR_SYNC_INTERVAL_MS,
   useT3CodeLocalSessions: true,
 };
+const DEFAULT_COPILOT_DASHBOARD_SETTINGS: CopilotDashboardSettings = {
+  enabled: true,
+  importDesktop: true,
+  importOtel: true,
+  importVsCode: true,
+};
 
 const optionalTrimmed = (value: string | undefined): string | undefined => {
   const trimmed = value?.trim();
@@ -243,6 +273,17 @@ const normalizeCursorDashboardSettings = (
     input.useT3CodeLocalSessions ??
     previous?.useT3CodeLocalSessions ??
     DEFAULT_CURSOR_DASHBOARD_SETTINGS.useT3CodeLocalSessions,
+});
+const normalizeCopilotDashboardSettings = (
+  input: z.infer<typeof copilotDashboardSettingsSchema>
+): CopilotDashboardSettings => ({
+  enabled: input.enabled ?? DEFAULT_COPILOT_DASHBOARD_SETTINGS.enabled,
+  importDesktop:
+    input.importDesktop ?? DEFAULT_COPILOT_DASHBOARD_SETTINGS.importDesktop,
+  importOtel: input.importOtel ?? DEFAULT_COPILOT_DASHBOARD_SETTINGS.importOtel,
+  importVsCode:
+    input.importVsCode ?? DEFAULT_COPILOT_DASHBOARD_SETTINGS.importVsCode,
+  otelExporterFile: optionalTrimmed(input.otelExporterFile),
 });
 
 interface StoredSessionRow {
@@ -778,6 +819,53 @@ export class Store {
         "INSERT INTO gateway_settings(key,value) VALUES('cursor_dashboard',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
       )
       .run(JSON.stringify(next));
+    return next;
+  }
+
+  providerDashboardSettings(): ProviderDashboardSettings {
+    const cursor = this.cursorDashboardSettings();
+    // SAFETY: the query selects the non-null `value` column from gateway_settings.
+    const row = this.db
+      .query(
+        "SELECT value FROM gateway_settings WHERE key='provider_dashboard'"
+      )
+      .get() as { value: string } | null;
+    if (!row) {
+      return { copilot: { ...DEFAULT_COPILOT_DASHBOARD_SETTINGS }, cursor };
+    }
+    try {
+      const parsed = providerDashboardSettingsSchema.safeParse(
+        JSON.parse(row.value)
+      );
+      if (parsed.success) {
+        return {
+          copilot: normalizeCopilotDashboardSettings(parsed.data.copilot ?? {}),
+          cursor: normalizeCursorDashboardSettings(
+            parsed.data.cursor ?? cursor,
+            cursor
+          ),
+        };
+      }
+    } catch {
+      // Invalid persisted settings fall back to the individual provider defaults.
+    }
+    return { copilot: { ...DEFAULT_COPILOT_DASHBOARD_SETTINGS }, cursor };
+  }
+
+  setProviderDashboardSettings(
+    settings: ProviderDashboardSettings
+  ): ProviderDashboardSettings {
+    const next: ProviderDashboardSettings = {
+      copilot: normalizeCopilotDashboardSettings(settings.copilot),
+      cursor: normalizeCursorDashboardSettings(settings.cursor),
+    };
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('provider_dashboard',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(next));
+    // Preserve the old record so existing gateway versions and endpoints stay compatible.
+    this.setCursorDashboardSettings(next.cursor);
     return next;
   }
 

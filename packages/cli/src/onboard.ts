@@ -282,10 +282,15 @@ const setupClient = async (): Promise<void> => {
   ))
     ? "nightly"
     : "stable";
+  const gatewayProviderSettings = await confirm(
+    "Can the gateway control your provider settings",
+    true
+  );
   const config = await writeConfig("client", {
     TOKTRACKER_API_KEY: accessKey,
     TOKTRACKER_DATA_DIR: dataDirectory("client"),
     TOKTRACKER_GATEWAY: gatewayUrl,
+    TOKTRACKER_GATEWAY_PROVIDER_SETTINGS: gatewayProviderSettings ? "1" : "0",
     TOKTRACKER_UPDATE_CHANNEL: updateChannel,
   });
   await installService("client");

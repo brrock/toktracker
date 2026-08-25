@@ -94,6 +94,10 @@ const CONFIG_FIELDS = {
       environmentKey: "TOKTRACKER_GATEWAY_AUTO_UPDATE",
       validate: boolean,
     },
+    "gateway-provider-settings": {
+      environmentKey: "TOKTRACKER_GATEWAY_PROVIDER_SETTINGS",
+      validate: boolean,
+    },
     "gateway-url": {
       environmentKey: "TOKTRACKER_GATEWAY",
       validate: normalizeUrl,
