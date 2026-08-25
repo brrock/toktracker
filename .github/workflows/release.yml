@@ -89,6 +89,9 @@ jobs:
       - name: Verify
         run: bun run typecheck && bun test && bun run check
 
+      - name: Remove previous build artifacts
+        run: rm -rf apps/client/dist apps/dashboard/dist apps/gateway/dist
+
       - name: Build applications
         run: bun run build
 
@@ -119,6 +122,11 @@ jobs:
           for archive in release/*.tgz; do
             sha256sum "$archive" > "$archive.sha256"
           done
+
+      - name: Verify gateway release archive
+        env:
+          VERSION: ${{ steps.release.outputs.tag }}
+        run: bun scripts/verify-release-archive.ts "release/toktracker-gateway-$VERSION.tgz"
 
       - name: Create GitHub release
         env:
