@@ -384,6 +384,12 @@ describe("T3 Code Cursor sessions", () => {
       thread_id TEXT PRIMARY KEY,
       provider_name TEXT
     )`);
+    db.run(`CREATE TABLE projection_thread_activities (
+      thread_id TEXT,
+      kind TEXT,
+      payload_json TEXT,
+      created_at TEXT
+    )`);
     db.run(
       "INSERT INTO projection_projects VALUES ('p1','TokTracker','/home/u/src/toktracker')"
     );
@@ -392,6 +398,10 @@ describe("T3 Code Cursor sessions", () => {
       [JSON.stringify({ model: "composer-2", provider: "cursor" })]
     );
     db.run("INSERT INTO projection_thread_sessions VALUES ('t1','cursor')");
+    db.run(
+      "INSERT INTO projection_thread_activities VALUES ('t1','context-window.updated',?, '2026-08-01T12:01:00.000Z')",
+      [JSON.stringify({ totalProcessedTokens: 1234 })]
+    );
     db.run(
       "INSERT INTO projection_threads VALUES ('t2','p1','Codex work','2026-08-01T12:00:00.000Z','2026-08-01T12:00:00.000Z',NULL,?)",
       [JSON.stringify({ model: "gpt-5.4", provider: "codex" })]
@@ -404,6 +414,7 @@ describe("T3 Code Cursor sessions", () => {
     expect(rows[0]?.sessionTitle).toBe("Wire Cursor ingest");
     expect(rows[0]?.workspaceLabel).toBe("toktracker");
     expect(rows[0]?.modelId).toBe("composer-2");
+    expect(rows[0]?.tokens.input).toBe(1234);
     expect(rows[0]?.costSource).toBe("unknown");
   });
 });

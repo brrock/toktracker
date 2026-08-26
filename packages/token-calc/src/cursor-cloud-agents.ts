@@ -19,6 +19,14 @@ export interface CloudAgentWorkspaceEntry {
   workspace: string;
 }
 
+export interface CloudAgent {
+  id: string;
+  latestRunId?: string;
+  name: string;
+  repository?: string;
+  updatedAt?: number;
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | undefined => {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return undefined;
@@ -137,6 +145,81 @@ const fetchOneCloudAgent = async (
     );
   }
   return workspaceFromCloudAgentPayload(await response.json());
+};
+
+const timestampField = (
+  record: Record<string, unknown> | undefined,
+  key: string
+): number | undefined => {
+  const value = record?.[key];
+  if (typeof value === "number" && Number.isFinite(value)) {
+    return value > 1e12 ? value : value * 1000;
+  }
+  if (typeof value === "string") {
+    const parsed = Date.parse(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+const cloudAgentFromPayload = (payload: unknown): CloudAgent | undefined => {
+  const record = asRecord(payload);
+  const id = stringField(record, "id");
+  if (!id) {
+    return undefined;
+  }
+  return {
+    id,
+    latestRunId: stringField(record, "latestRunId") || undefined,
+    name: stringField(record, "name") || `Cloud agent ${id}`,
+    repository: workspaceFromCloudAgentPayload(record) || undefined,
+    updatedAt:
+      timestampField(record, "updatedAt") ??
+      timestampField(record, "createdAt"),
+  };
+};
+
+/**
+ * Lists every Cloud Agent visible to a Cursor API key. The Cloud Agents API
+ * exposes agent metadata and runs, but does not report token usage.
+ */
+export const fetchCloudAgents = async (
+  apiKey: string,
+  fetchImpl: CursorFetch = fetch
+): Promise<CloudAgent[]> => {
+  const agents: CloudAgent[] = [];
+  let cursor: string | undefined;
+  do {
+    const url = new URL(CLOUD_AGENT_API);
+    url.searchParams.set("limit", "100");
+    if (cursor) {
+      url.searchParams.set("cursor", cursor);
+    }
+    const response = await fetchImpl(url, {
+      headers: { authorization: basicAuthHeader(apiKey) },
+    });
+    if (!response.ok) {
+      throw new Error(`Cloud Agents returned status ${response.status}`);
+    }
+    const payload = asRecord(await response.json());
+    let rows: unknown[] = [];
+    if (Array.isArray(payload?.agents)) {
+      rows = payload.agents;
+    } else if (Array.isArray(payload?.data)) {
+      rows = payload.data;
+    }
+    for (const row of rows) {
+      const agent = cloudAgentFromPayload(row);
+      if (agent) {
+        agents.push(agent);
+      }
+    }
+    cursor =
+      stringField(payload, "nextCursor") ||
+      stringField(payload, "next_cursor") ||
+      undefined;
+  } while (cursor);
+  return agents;
 };
 
 export const fetchCloudAgentWorkspaces = async (

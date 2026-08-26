@@ -140,6 +140,17 @@ export interface CursorDashboardOverview extends CursorDashboardSettings {
   })[];
 }
 
+export interface CloudAgentAccount {
+  apiKey: string;
+  id: string;
+  label: string;
+}
+
+export interface CloudAgentAccountOverview {
+  id: string;
+  label: string;
+}
+
 const clientAutoUpdateSettingsSchema: z.ZodType<ClientAutoUpdateSettings> =
   z.object({
     channel: z.enum(["stable", "nightly"]),
@@ -189,6 +200,12 @@ const cursorDashboardSettingsSchema = z.object({
   t3Home: z.string().max(1024).optional(),
   useT3CodeLocalSessions: z.boolean().optional(),
 });
+const cloudAgentAccountSchema: z.ZodType<CloudAgentAccount> = z.object({
+  apiKey: z.string().trim().min(1).max(512),
+  id: z.string().trim().min(1).max(128),
+  label: z.string().trim().min(1).max(128),
+});
+const cloudAgentAccountsSchema = z.array(cloudAgentAccountSchema).max(50);
 const copilotDashboardSettingsSchema = z.object({
   enabled: z.boolean().optional(),
   importDesktop: z.boolean().optional(),
@@ -820,6 +837,73 @@ export class Store {
       )
       .run(JSON.stringify(next));
     return next;
+  }
+
+  cloudAgentAccounts(): CloudAgentAccount[] {
+    // SAFETY: the query selects the non-null `value` column from gateway_settings.
+    const row = this.db
+      .query(
+        "SELECT value FROM gateway_settings WHERE key='cursor_cloud_agent_accounts'"
+      )
+      .get() as { value: string } | null;
+    if (!row) {
+      return [];
+    }
+    try {
+      const parsed = cloudAgentAccountsSchema.safeParse(JSON.parse(row.value));
+      return parsed.success ? parsed.data : [];
+    } catch {
+      return [];
+    }
+  }
+
+  cloudAgentAccountOverview(): CloudAgentAccountOverview[] {
+    return this.cloudAgentAccounts().map(({ id, label }) => ({ id, label }));
+  }
+
+  addCloudAgentAccount(
+    label: string,
+    apiKey: string
+  ): CloudAgentAccountOverview {
+    const accounts = this.cloudAgentAccounts();
+    const normalizedLabel = label.trim();
+    if (
+      accounts.some(
+        (account) =>
+          account.label.localeCompare(normalizedLabel, undefined, {
+            sensitivity: "accent",
+          }) === 0
+      )
+    ) {
+      throw new Error(
+        `Cloud Agent account label already exists: ${normalizedLabel}`
+      );
+    }
+    const account: CloudAgentAccount = {
+      apiKey: apiKey.trim(),
+      id: crypto.randomUUID(),
+      label: normalizedLabel,
+    };
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('cursor_cloud_agent_accounts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify([...accounts, account]));
+    return { id: account.id, label: account.label };
+  }
+
+  removeCloudAgentAccount(id: string): boolean {
+    const accounts = this.cloudAgentAccounts();
+    const next = accounts.filter((account) => account.id !== id);
+    if (next.length === accounts.length) {
+      return false;
+    }
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('cursor_cloud_agent_accounts',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(next));
+    return true;
   }
 
   providerDashboardSettings(): ProviderDashboardSettings {

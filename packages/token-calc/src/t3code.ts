@@ -17,6 +17,7 @@ interface T3CursorRow {
   provider_name: string | null;
   thread_id: string;
   title: string | null;
+  usage_json: string | null;
   updated_at: string | number | null;
   workspace_root: string | null;
 }
@@ -112,6 +113,21 @@ const isCursorProvider = (name: string | null | undefined): boolean => {
   return value.includes("cursor");
 };
 
+const totalProcessedTokens = (raw: string | null | undefined): number => {
+  if (!raw) {
+    return 0;
+  }
+  try {
+    const payload = asRecord(JSON.parse(raw));
+    const value = payload?.totalProcessedTokens;
+    return typeof value === "number" && Number.isFinite(value) && value > 0
+      ? Math.trunc(value)
+      : 0;
+  } catch {
+    return 0;
+  }
+};
+
 export function parseT3CodeCursorSqlite(path: string): UsageMessage[] {
   let db: Database;
   try {
@@ -135,6 +151,16 @@ export function parseT3CodeCursorSqlite(path: string): UsageMessage[] {
     const selectionColumn = threadCols.has("model_selection_json")
       ? "t.model_selection_json"
       : "NULL";
+    const activitiesCols = tableColumns(db, "projection_thread_activities");
+    const usageColumn =
+      activitiesCols.has("payload_json") && activitiesCols.has("created_at")
+        ? `(SELECT a.payload_json
+            FROM projection_thread_activities a
+            WHERE a.thread_id=t.thread_id
+              AND a.kind='context-window.updated'
+            ORDER BY a.created_at DESC
+            LIMIT 1)`
+        : "NULL";
     const workspaceColumn = projectCols.has("workspace_root")
       ? "p.workspace_root"
       : "NULL";
@@ -154,6 +180,7 @@ export function parseT3CodeCursorSqlite(path: string): UsageMessage[] {
         t.updated_at AS updated_at,
         ${modelColumn} AS model,
         ${selectionColumn} AS model_selection_json,
+        ${usageColumn} AS usage_json,
         ts.provider_name AS provider_name,
         ${workspaceColumn} AS workspace_root,
         ${projectTitleColumn} AS project_title
@@ -182,6 +209,10 @@ export function parseT3CodeCursorSqlite(path: string): UsageMessage[] {
         "unknown";
       const workspace = normalizeWorkspace(row.workspace_root ?? undefined);
       const title = row.title?.replaceAll(/\s+/gu, " ").trim();
+      // T3Code records an exact cumulative total for each context-window
+      // update. It already includes the output tokens, so preserve it as one
+      // aggregate input lane instead of double-counting the latest output.
+      const tokens = totalProcessedTokens(row.usage_json);
       messages.push(
         makeMessage({
           client: "cursor",
@@ -193,7 +224,10 @@ export function parseT3CodeCursorSqlite(path: string): UsageMessage[] {
           sessionId: `cursor-t3-${row.thread_id}`,
           sessionTitle: title ? title.slice(0, 160) : undefined,
           timestamp,
-          tokens: zeroTokens(),
+          tokens: {
+            ...zeroTokens(),
+            input: tokens,
+          },
           workspaceKey: workspace.key,
           workspaceLabel: workspace.label ?? row.project_title ?? undefined,
         })

@@ -15,24 +15,15 @@ import type {
 } from "@toktracker/shared";
 import type { PriceCatalog } from "@toktracker/token-calc";
 import {
-  accountIdFromCursorCachePath,
-  activeCursorCloudAgentApiKey,
   applyEstimatedPricing,
-  cursorCloudAgentApiKeys,
   clampCursorSyncIntervalMs,
   DEFAULT_CURSOR_SYNC_INTERVAL_MS,
-  fetchCloudAgentWorkspaces,
-  importDesktopCursorAccounts,
-  listCursorAccounts,
-  listCursorCsvCloudAgentIds,
-  listCursorUsageCsvFiles,
   listT3CodeStateSqliteFiles,
   parseClaude,
   parseCodex,
   parseCopilotDesktopSqlite,
   parseCopilotOtel,
   parseCopilotVsCode,
-  parseCursorCsv,
   parseHermesSqlite,
   parseLiteLlmCatalog,
   parseModelsDevCatalog,
@@ -41,13 +32,6 @@ import {
   parseOpenCodeSqlite,
   parsePi,
   parseT3CodeCursorSqlite,
-  readDesktopCursorSessions,
-  removeCursorAccount,
-  resolveCursorPaths,
-  setActiveCursorAccount,
-  setCursorCloudAgentApiKey,
-  syncCursorUsageCaches,
-  upsertCursorAccount,
 } from "@toktracker/token-calc";
 import { z } from "zod";
 
@@ -82,9 +66,6 @@ let cursorSyncIntervalMs = clampCursorSyncIntervalMs(
       DEFAULT_CURSOR_SYNC_INTERVAL_MS
   )
 );
-let cursorLastError: string | undefined;
-let cursorLastSyncAt: number | undefined;
-let cursorCloudAgentWorkspaces: Record<string, string> = {};
 interface CursorIngestPolicy {
   cloudAgentApiKey?: string;
   enabled: boolean;
@@ -371,98 +352,11 @@ async function discover(): Promise<Source[]> {
   ) {
     add({ kind: "copilot-otel", path: otelExporterFile });
   }
-  if (cursorIngestPolicy.enabled) {
-    const cursorPaths = resolveCursorPaths(dataDir, home);
-    const existingAccounts = await listCursorAccounts(cursorPaths);
-    try {
-      const cursorSync = await syncCursorUsageCaches(cursorPaths, {
-        freshnessMs: cursorSyncIntervalMs,
-      });
-      const accounts = await listCursorAccounts(cursorPaths);
-      const added = accounts.filter(
-        (account) =>
-          !existingAccounts.some((existing) => existing.id === account.id)
-      );
-      if (added.length > 0) {
-        console.log(
-          `TokTracker: using Cursor desktop auth (${added
-            .map((account) => account.label ?? account.id)
-            .join(", ")})`
-        );
-      }
-      if (cursorSync.synced) {
-        cursorLastSyncAt = Date.now();
-        cursorLastError = cursorSync.error;
-      } else if (cursorSync.error && !cursorSync.synced) {
-        cursorLastError = cursorSync.error;
-        console.warn(
-          `TokTracker: Cursor usage sync skipped (${cursorSync.error})`
-        );
-      }
-    } catch (error) {
-      cursorLastError = error instanceof Error ? error.message : String(error);
-      console.warn("TokTracker: Cursor usage sync failed", error);
-    }
-    const csvFiles = await listCursorUsageCsvFiles(cursorPaths);
-    const needCursorCsv =
-      !cursorIngestPolicy.useT3CodeLocalSessions ||
-      cursorIngestPolicy.includeCloudAgents ||
-      cursorIngestPolicy.includeAutomations;
-    if (needCursorCsv) {
-      if (cursorIngestPolicy.includeCloudAgents) {
-        const credentials = await cursorCloudAgentApiKeys(cursorPaths);
-        const fallbackKey =
-          (await activeCursorCloudAgentApiKey(cursorPaths)) ??
-          cursorIngestPolicy.cloudAgentApiKey;
-        cursorCloudAgentWorkspaces = {};
-        for (const path of csvFiles) {
-          const accountId = accountIdFromCursorCachePath(path);
-          const apiKey =
-            credentials.keys[
-              accountId === "active" ? credentials.activeAccountId : accountId
-            ] ?? fallbackKey;
-          if (!apiKey) {
-            continue;
-          }
-          const agentIds = listCursorCsvCloudAgentIds(
-            await Bun.file(path).text()
-          );
-          try {
-            const workspaces = await fetchCloudAgentWorkspaces(agentIds, {
-              apiKey,
-              cachePath: join(
-                cursorPaths.cacheDir,
-                `cloud-agent-workspaces.${accountId}.json`
-              ),
-            });
-            Object.assign(cursorCloudAgentWorkspaces, workspaces);
-            cursorDebug("Cloud Agents lookup finished", {
-              accountId,
-              workspaceCount: Object.keys(workspaces).length,
-            });
-          } catch (error) {
-            cursorDebug("Cloud Agents lookup failed", {
-              accountId,
-              error: error instanceof Error ? error.message : String(error),
-            });
-          }
-        }
-      } else {
-        cursorCloudAgentWorkspaces = {};
-      }
-      for (const path of csvFiles) {
-        add({ kind: "cursor", path });
-      }
-    }
-    if (cursorIngestPolicy.useT3CodeLocalSessions) {
-      const t3Files = listT3CodeStateSqliteFiles(
-        home,
-        cursorIngestPolicy.t3Home
-      );
-      cursorDebug("T3 Code discovery", { databaseCount: t3Files.length });
-      for (const path of t3Files) {
-        add({ kind: "t3code-cursor", path });
-      }
+  if (cursorIngestPolicy.enabled && cursorIngestPolicy.useT3CodeLocalSessions) {
+    const t3Files = listT3CodeStateSqliteFiles(home, cursorIngestPolicy.t3Home);
+    cursorDebug("T3 Code discovery", { databaseCount: t3Files.length });
+    for (const path of t3Files) {
+      add({ kind: "t3code-cursor", path });
     }
   }
   const openclawRoots = [
@@ -547,14 +441,6 @@ async function parseUnpriced(
         uri = workspace.folder ?? workspace.workspace;
       } catch {}
       return parseCopilotVsCode(text, source.path, uri);
-    }
-    case "cursor": {
-      return parseCursorCsv(text, source.path, {
-        agentWorkspaces: cursorCloudAgentWorkspaces,
-        includeAutomations: cursorIngestPolicy.includeAutomations,
-        includeCloudAgents: cursorIngestPolicy.includeCloudAgents,
-        skipLocalRows: cursorIngestPolicy.useT3CodeLocalSessions,
-      });
     }
     case "openclaw": {
       return parseOpenClaw(text, source.path, mtime);
@@ -1031,7 +917,6 @@ const applyProviderSettings = async (): Promise<void> => {
   const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
   const accessKey = process.env.TOKTRACKER_API_KEY;
   warnAboutInsecureGateway(endpoint, accessKey);
-  const cursorPaths = resolveCursorPaths(dataDir, home);
   try {
     const policyResponse = await fetch(
       `${endpoint}/api/v1/client-provider-policy?deviceId=${encodeURIComponent(deviceId!)}`,
@@ -1069,87 +954,6 @@ const applyProviderSettings = async (): Promise<void> => {
     cursorIngestPolicy.useT3CodeLocalSessions =
       policy.cursor.useT3CodeLocalSessions ?? true;
     Object.assign(copilotIngestPolicy, policy.copilot);
-    const acknowledged: string[] = [];
-    for (const command of policy.commands) {
-      try {
-        cursorDebug("applying command", {
-          accountId: command.accountId,
-          id: command.id,
-          type: command.type,
-        });
-        if (command.type === "import-desktop") {
-          await importDesktopCursorAccounts(cursorPaths);
-        } else if (command.type === "add-account" && command.token) {
-          await upsertCursorAccount(
-            cursorPaths,
-            command.token,
-            command.label,
-            command.cloudAgentApiKey
-          );
-        } else if (
-          command.type === "set-api-key" &&
-          command.accountId &&
-          command.cloudAgentApiKey
-        ) {
-          await setCursorCloudAgentApiKey(
-            cursorPaths,
-            command.accountId,
-            command.cloudAgentApiKey
-          );
-        } else if (command.type === "remove-account" && command.accountId) {
-          await removeCursorAccount(cursorPaths, command.accountId, true);
-        } else if (command.type === "switch-account" && command.accountId) {
-          await setActiveCursorAccount(cursorPaths, command.accountId);
-        }
-        acknowledged.push(command.id);
-        cursorDebug("command applied", { id: command.id, type: command.type });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
-        // Dashboard commands are durable, while an account can already have
-        // been removed locally (or use an older account-ID format). DELETE is
-        // idempotent, so acknowledge this completed command instead of
-        // retrying it forever.
-        if (
-          command.type === "remove-account" &&
-          message.startsWith("Cursor account not found:")
-        ) {
-          acknowledged.push(command.id);
-          cursorDebug("remove command already complete", {
-            accountId: command.accountId,
-            id: command.id,
-          });
-          continue;
-        }
-        cursorLastError = message;
-        cursorDebug("command failed", {
-          error: cursorLastError,
-          id: command.id,
-          type: command.type,
-        });
-      }
-    }
-    if (acknowledged.length > 0) {
-      const acknowledgement = await fetch(
-        `${endpoint}/api/v1/client-cursor-commands/ack`,
-        {
-          body: JSON.stringify({
-            commandIds: acknowledged,
-            deviceId,
-          }),
-          headers: (() => {
-            const headers = gatewayHeaders();
-            headers.set("content-type", "application/json");
-            return headers;
-          })(),
-          method: "POST",
-          signal: AbortSignal.timeout(5000),
-        }
-      );
-      cursorDebug("commands acknowledged", {
-        count: acknowledged.length,
-        status: acknowledgement.status,
-      });
-    }
   } catch (error) {
     console.warn("TokTracker: Cursor dashboard commands failed", error);
   }
@@ -1160,28 +964,16 @@ const reportCursorStatus = async (): Promise<void> => {
     return;
   }
   const endpoint = process.env.TOKTRACKER_GATEWAY ?? "http://localhost:3000";
-  const cursorPaths = resolveCursorPaths(dataDir, home);
   try {
-    const desktop = readDesktopCursorSessions(home);
-    const accounts = await listCursorAccounts(cursorPaths);
     cursorDebug("reporting status", {
-      accountIds: accounts.map((account) => account.id),
-      desktopSessions: desktop.length,
-      lastError: cursorLastError,
+      accountIds: [],
+      desktopSessions: 0,
     });
     const response = await fetch(`${endpoint}/api/v1/client-cursor-status`, {
       body: JSON.stringify({
-        accounts: accounts.map((account) => ({
-          cloudAgentApiKeyConfigured: account.cloudAgentApiKeyConfigured,
-          id: account.id,
-          isActive: account.isActive,
-          label: account.label,
-        })),
-        desktopEmail: desktop[0]?.email,
-        desktopSignedIn: desktop.length > 0,
+        accounts: [],
+        desktopSignedIn: false,
         deviceId,
-        lastError: cursorLastError,
-        lastSyncAt: cursorLastSyncAt,
         syncIntervalMs: cursorSyncIntervalMs,
       }),
       headers: (() => {

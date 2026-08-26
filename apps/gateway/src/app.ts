@@ -15,6 +15,7 @@ import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
 import { z } from "zod";
 
+import { syncCloudAgentAccount } from "./cursor-cloud-agents";
 import type {
   ClientAutoUpdateSettings,
   CursorDeviceStatus,
@@ -100,6 +101,10 @@ const cursorAccountActionSchema = z.object({
   deviceId: z.string().trim().min(1).max(128),
   label: z.string().trim().max(128).optional(),
   token: z.string().trim().min(1).max(8192).optional(),
+});
+const cloudAgentAccountRequestSchema = z.object({
+  apiKey: z.string().trim().min(1).max(512),
+  label: z.string().trim().min(1).max(128),
 });
 const timeRangeSchema = z.enum(["day", "week", "month", "year", "all"]);
 
@@ -373,13 +378,86 @@ export const createApp = (
     return context.json({ removed });
   });
   app.get("/api/v1/settings/cursor", (context) =>
-    context.json(store.cursorDashboardOverview())
+    context.json({
+      ...store.cursorDashboardOverview(),
+      cloudAgentAccounts: store.cloudAgentAccountOverview(),
+    })
   );
   app.get("/api/v1/settings/providers", (context) =>
     context.json({
       ...store.providerDashboardSettings(),
+      cloudAgentAccounts: store.cloudAgentAccountOverview(),
       devices: store.cursorDashboardOverview().devices,
     })
+  );
+  app.post("/api/v1/settings/cursor/cloud-agent-accounts", async (context) => {
+    let body: z.infer<typeof cloudAgentAccountRequestSchema>;
+    try {
+      body = cloudAgentAccountRequestSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid Cloud Agent account" }, 400);
+    }
+    let account;
+    try {
+      account = store.addCloudAgentAccount(body.label, body.apiKey);
+    } catch (error) {
+      return context.json(
+        {
+          error:
+            error instanceof Error ? error.message : "Could not save account",
+        },
+        400
+      );
+    }
+    const stored = store
+      .cloudAgentAccounts()
+      .find((candidate) => candidate.id === account.id);
+    if (!stored) {
+      return context.json({ error: "Could not load saved account" }, 500);
+    }
+    try {
+      const agents = await syncCloudAgentAccount(store, stored);
+      return context.json({ ...account, agents });
+    } catch (error) {
+      return context.json(
+        {
+          ...account,
+          error:
+            error instanceof Error ? error.message : "Cloud Agent sync failed",
+        },
+        502
+      );
+    }
+  });
+  app.post(
+    "/api/v1/settings/cursor/cloud-agent-accounts/:id/sync",
+    async (context) => {
+      const account = store
+        .cloudAgentAccounts()
+        .find((candidate) => candidate.id === context.req.param("id"));
+      if (!account) {
+        return context.json({ error: "Cloud Agent account not found" }, 404);
+      }
+      try {
+        const agents = await syncCloudAgentAccount(store, account);
+        return context.json({ agents });
+      } catch (error) {
+        return context.json(
+          {
+            error:
+              error instanceof Error
+                ? error.message
+                : "Cloud Agent sync failed",
+          },
+          502
+        );
+      }
+    }
+  );
+  app.delete("/api/v1/settings/cursor/cloud-agent-accounts/:id", (context) =>
+    store.removeCloudAgentAccount(context.req.param("id"))
+      ? context.json({ ok: true })
+      : context.json({ error: "Cloud Agent account not found" }, 404)
   );
   app.put("/api/v1/settings/providers", async (context) => {
     let settings: z.infer<typeof providerDashboardSettingsSchema>;
