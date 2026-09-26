@@ -344,4 +344,31 @@ describe("Store", () => {
     ).toEqual({ count: 4 });
     database.close();
   });
+
+  test("computes summaries and session search on the worker, refreshing after ingest", async () => {
+    const { store } = await createStore();
+    const now = Date.now();
+    store.ingest(payload("device", "/one.jsonl", "one", now, "First"));
+
+    const first = await store.summaryAsync([], "all", true);
+    expect(first).toEqual(store.summary([], "all", true));
+    expect(first.totals.sessions).toBe(1);
+    expect(await store.summaryAsync([], "all", true)).toBe(first);
+    expect(await store.sessionsAsync("first")).toHaveLength(1);
+
+    store.ingest(payload("device", "/two.jsonl", "two", now, "Second"));
+    const second = await store.summaryAsync([], "all", true);
+    expect(second.totals.sessions).toBe(2);
+    expect(await store.sessionsAsync("")).toHaveLength(2);
+    expect(await store.sessionsAsync("", ["other-device"])).toHaveLength(0);
+    store.close();
+  });
+
+  test("only builds hourly buckets for the single-day range", async () => {
+    const { store } = await createStore();
+    store.ingest(payload("device", "/one.jsonl", "one", Date.now()));
+    expect(store.summary([], "day").hourly).toHaveLength(24);
+    expect(store.summary([], "month").hourly).toEqual([]);
+    store.close();
+  });
 });

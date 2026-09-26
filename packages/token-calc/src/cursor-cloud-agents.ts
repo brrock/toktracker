@@ -8,6 +8,9 @@ const CLOUD_AGENT_API = "https://api.cursor.com/v1/agents";
 const CACHE_VERSION = 1;
 const DEFAULT_CACHE_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 const FETCH_CONCURRENCY = 4;
+const REQUEST_TIMEOUT_MS = 15_000;
+// Guards against an API that keeps returning a next-page cursor forever.
+const MAX_AGENT_PAGES = 100;
 
 export interface CloudAgentWorkspaceCache {
   agents: Record<string, CloudAgentWorkspaceEntry>;
@@ -137,6 +140,7 @@ const fetchOneCloudAgent = async (
       headers: {
         authorization: basicAuthHeader(apiKey),
       },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     }
   );
   if (!response.ok) {
@@ -188,8 +192,14 @@ export const fetchCloudAgents = async (
   fetchImpl: CursorFetch = fetch
 ): Promise<CloudAgent[]> => {
   const agents: CloudAgent[] = [];
+  const seenCursors = new Set<string>();
   let cursor: string | undefined;
+  let pages = 0;
   do {
+    pages += 1;
+    if (pages > MAX_AGENT_PAGES) {
+      throw new Error("Cloud Agents pagination did not terminate");
+    }
     const url = new URL(CLOUD_AGENT_API);
     url.searchParams.set("limit", "100");
     if (cursor) {
@@ -197,6 +207,7 @@ export const fetchCloudAgents = async (
     }
     const response = await fetchImpl(url, {
       headers: { authorization: basicAuthHeader(apiKey) },
+      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
     });
     if (!response.ok) {
       throw new Error(`Cloud Agents returned status ${response.status}`);
@@ -218,6 +229,12 @@ export const fetchCloudAgents = async (
       stringField(payload, "nextCursor") ||
       stringField(payload, "next_cursor") ||
       undefined;
+    if (cursor && seenCursors.has(cursor)) {
+      throw new Error("Cloud Agents pagination repeated a cursor");
+    }
+    if (cursor) {
+      seenCursors.add(cursor);
+    }
   } while (cursor);
   return agents;
 };

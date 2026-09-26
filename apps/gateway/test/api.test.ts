@@ -287,6 +287,7 @@ describe("gateway API", () => {
     });
     expect(saved.status).toBe(200);
     expect(await saved.json()).toEqual({
+      cloudAgentApiKeyConfigured: false,
       enabled: true,
       includeAutomations: false,
       includeCloudAgents: true,
@@ -455,5 +456,106 @@ describe("gateway API", () => {
     const second = (await secondResponse.json()) as unknown[];
     expect(first).toHaveLength(20);
     expect(second).toHaveLength(10);
+  });
+
+  test("rejects non-loopback hosts when no shared key is configured", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const rebound = await app.request("http://attacker.example/api/health");
+    expect(rebound.status).toBe(403);
+    const local = await app.request("http://127.0.0.1:3000/api/health");
+    expect(local.status).toBe(200);
+
+    const keyed = createApp(store, "secret");
+    const lan = await keyed.request("http://192.168.1.2:3000/api/health", {
+      headers: { authorization: "Bearer secret" },
+    });
+    expect(lan.status).toBe(200);
+  });
+
+  test("rejects cross-site form and text bodies", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const body = JSON.stringify(manySessions(1));
+    const response = await app.request("/api/v1/ingest", {
+      body,
+      headers: {
+        "content-length": String(Buffer.byteLength(body)),
+        "content-type": "text/plain",
+      },
+      method: "POST",
+    });
+    expect(response.status).toBe(415);
+    expect(store.sessions("", [], [], 20)).toHaveLength(0);
+  });
+
+  test("never returns the Cloud Agent API key to the dashboard", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const headers = await pairDashboard(app, store);
+    const saved = await app.request("/api/v1/settings/cursor", {
+      body: JSON.stringify({
+        cloudAgentApiKey: "key_secret",
+        enabled: true,
+        syncIntervalMs: 120_000,
+      }),
+      headers: { ...headers, "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(JSON.stringify(await saved.json())).not.toContain("key_secret");
+
+    const providers = await app.request("/api/v1/settings/providers", {
+      headers,
+    });
+    const providerText = await providers.text();
+    expect(providerText).not.toContain("key_secret");
+    expect(providerText).toContain('"cloudAgentApiKeyConfigured":true');
+
+    // Saving without the key (as the dashboard does) keeps the stored key.
+    const resaved = await app.request("/api/v1/settings/providers", {
+      body: JSON.stringify({
+        copilot: {
+          enabled: true,
+          importDesktop: true,
+          importOtel: true,
+          importVsCode: true,
+        },
+        cursor: { enabled: true, syncIntervalMs: 120_000 },
+      }),
+      headers: { ...headers, "content-type": "application/json" },
+      method: "PUT",
+    });
+    expect(resaved.status).toBe(200);
+    expect(store.cursorDashboardSettings().cloudAgentApiKey).toBe("key_secret");
+  });
+
+  test("rate limits failed pairing attempts", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const attempt = () =>
+      app.request("/api/v1/auth/pair", {
+        body: JSON.stringify({ code: "WRONG", deviceName: "Attacker" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      });
+    const statuses: number[] = [];
+    for (let index = 0; index < 21; index += 1) {
+      // eslint-disable-next-line no-await-in-loop -- attempts must be sequential.
+      const response = await attempt();
+      statuses.push(response.status);
+    }
+    expect(statuses.slice(0, 20).every((status) => status === 401)).toBe(true);
+    expect(statuses.at(-1)).toBe(429);
+  });
+
+  test("rejects oversized pairing bodies without buffering them", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const response = await app.request("/api/v1/auth/pair", {
+      body: JSON.stringify({ code: "x".repeat(8192), deviceName: "x" }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(response.status).toBe(413);
   });
 });

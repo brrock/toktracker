@@ -51,6 +51,8 @@ const MAX_BATCH_MESSAGES = 100_000;
 const MAX_BATCH_SOURCE_UPDATES = 10_000;
 const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
 const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
+const PRICING_FETCH_TIMEOUT_MS = 30_000;
+const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
 type CursorDebugDetails = Record<
   string,
   boolean | number | string | string[] | undefined
@@ -106,7 +108,31 @@ const cleanSessionTitle = <Value>(value: Value): string | undefined => {
   return title ? title.slice(0, 160) : undefined;
 };
 
-async function loadSessionTitles(): Promise<Map<string, string>> {
+const claudeHistoryHome = (): string =>
+  process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
+const codexHistoryHome = (): string =>
+  process.env.CODEX_HOME ?? join(home, ".codex");
+const sessionTitleSourcePaths = (): string[] => [
+  join(claudeHistoryHome(), "history.jsonl"),
+  join(codexHistoryHome(), "history.jsonl"),
+  join(codexHistoryHome(), "state_5.sqlite"),
+  join(codexHistoryHome(), "state_5.sqlite-wal"),
+];
+const sessionTitleSourceSignature = async (): Promise<string> => {
+  const parts = await Promise.all(
+    sessionTitleSourcePaths().map(async (path) => {
+      try {
+        const stat = await Bun.file(path).stat();
+        return `${path}:${stat.mtimeMs}:${stat.size}`;
+      } catch {
+        return `${path}:missing`;
+      }
+    })
+  );
+  return parts.join("|");
+};
+
+async function readSessionTitles(): Promise<Map<string, string>> {
   const titles = new Map<string, string>();
   const addHistory = async (
     path: string,
@@ -129,8 +155,8 @@ async function loadSessionTitles(): Promise<Map<string, string>> {
       } catch {}
     }
   };
-  const claudeHome = process.env.CLAUDE_CONFIG_DIR ?? join(home, ".claude");
-  const codexHome = process.env.CODEX_HOME ?? join(home, ".codex");
+  const claudeHome = claudeHistoryHome();
+  const codexHome = codexHistoryHome();
   await Promise.all([
     addHistory(join(claudeHome, "history.jsonl"), "sessionId", "display"),
     addHistory(join(codexHome, "history.jsonl"), "session_id", "text"),
@@ -165,6 +191,31 @@ async function loadSessionTitles(): Promise<Map<string, string>> {
   return titles;
 }
 
+// History files can be many megabytes; only re-read them when they change
+// instead of on every sync interval.
+let cachedSessionTitles:
+  | { signature: string; titles: Map<string, string>; fingerprint: string }
+  | undefined;
+const sessionTitleFingerprint = (titles: Map<string, string>): string =>
+  Bun.hash(JSON.stringify([...titles].toSorted())).toString(16);
+async function loadSessionTitles(): Promise<Map<string, string>> {
+  const signature = await sessionTitleSourceSignature();
+  if (cachedSessionTitles?.signature === signature) {
+    return cachedSessionTitles.titles;
+  }
+  const titles = await readSessionTitles();
+  cachedSessionTitles = {
+    fingerprint: sessionTitleFingerprint(titles),
+    signature,
+    titles,
+  };
+  return titles;
+}
+const cachedSessionTitleFingerprint = (titles: Map<string, string>): string =>
+  cachedSessionTitles?.titles === titles
+    ? cachedSessionTitles.fingerprint
+    : sessionTitleFingerprint(titles);
+
 async function loadPricingSource(
   cacheName: string,
   url: string,
@@ -179,7 +230,9 @@ async function loadPricingSource(
     }
   }
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, {
+      signal: AbortSignal.timeout(PRICING_FETCH_TIMEOUT_MS),
+    });
     if (!response.ok) {
       throw new Error(`Pricing source returned ${response.status}`);
     }
@@ -212,8 +265,6 @@ const [pricingCatalog, initialSessionTitles] = await Promise.all([
   loadSessionTitles(),
 ]);
 let sessionTitles = initialSessionTitles;
-const sessionTitleFingerprint = (titles: Map<string, string>): string =>
-  Bun.hash(JSON.stringify([...titles].toSorted())).toString(16);
 const db = new Database(join(dataDir, "client.db"), { create: true });
 db.exec(
   "CREATE TABLE IF NOT EXISTS indexed_files(path TEXT PRIMARY KEY,mtime_ms REAL NOT NULL,size INTEGER NOT NULL,uploaded_at INTEGER NOT NULL);CREATE TABLE IF NOT EXISTS indexed_sessions(source_path TEXT NOT NULL,session_id TEXT NOT NULL,content_hash TEXT NOT NULL,PRIMARY KEY(source_path,session_id));CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL)"
@@ -222,7 +273,7 @@ const indexVersion = Bun.hash(
   JSON.stringify([
     INDEX_SCHEMA_VERSION,
     pricingCatalog,
-    sessionTitleFingerprint(sessionTitles),
+    cachedSessionTitleFingerprint(sessionTitles),
   ])
 ).toString(16);
 const previousIndexVersion =
@@ -489,10 +540,12 @@ async function changedSessions(): Promise<SyncPlan> {
     sessions: [],
     sourceUpdates: [],
   };
+  const previousSessionTitles = sessionTitles;
   const latestSessionTitles = await loadSessionTitles();
   const titlesChanged =
-    sessionTitleFingerprint(sessionTitles) !==
-    sessionTitleFingerprint(latestSessionTitles);
+    latestSessionTitles !== previousSessionTitles &&
+    cachedSessionTitleFingerprint(previousSessionTitles) !==
+      cachedSessionTitleFingerprint(latestSessionTitles);
   sessionTitles = latestSessionTitles;
   const sources = await discover();
   const discoveredPaths = new Set(sources.map((source) => source.path));
@@ -525,10 +578,12 @@ async function changedSessions(): Promise<SyncPlan> {
       const messages = await parse(source, fp.mtime);
       const grouped = new Map<string, UsageMessage[]>();
       for (const message of messages) {
-        grouped.set(message.sessionId, [
-          ...(grouped.get(message.sessionId) ?? []),
-          message,
-        ]);
+        const group = grouped.get(message.sessionId);
+        if (group) {
+          group.push(message);
+        } else {
+          grouped.set(message.sessionId, [message]);
+        }
       }
       const hashes = new Map(
         [...grouped].map(([id, list]) => [id, sessionHash(list)])
@@ -703,6 +758,7 @@ async function upload(payload: IngestRequest, accessKey?: string) {
       body: requestBody,
       headers,
       method: "POST",
+      signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
     });
   };
   // Current gateways authenticate ingestion by successfully decrypting it, so
@@ -710,6 +766,7 @@ async function upload(payload: IngestRequest, accessKey?: string) {
   // legacy header only when talking to an older gateway.
   let response = await send();
   if (response.status === 401 && accessKey) {
+    await response.body?.cancel();
     warnAboutInsecureGateway(endpoint, accessKey);
     response = await send(`Bearer ${accessKey}`);
   }
@@ -736,8 +793,16 @@ async function uploadPlan(plan: SyncPlan) {
     sessions.push(session);
     sessionsBySource.set(session.sourcePath, sessions);
   }
+  // Track the serialized size incrementally. Re-serializing the whole batch
+  // (and copying its arrays) for every appended session was quadratic.
+  const emptyBatchBytes = byteLength({
+    device,
+    sessions: [],
+    sourceUpdates: [],
+  });
   let batch: IngestRequest = { device, sessions: [], sourceUpdates: [] };
   let batchMessageCount = 0;
+  let batchBytes = emptyBatchBytes;
   const flush = async () => {
     if (batch.sessions.length === 0 && batch.sourceUpdates?.length === 0) {
       return;
@@ -752,39 +817,57 @@ async function uploadPlan(plan: SyncPlan) {
     );
     batch = { device, sessions: [], sourceUpdates: [] };
     batchMessageCount = 0;
+    batchBytes = emptyBatchBytes;
   };
-  const appendToBatch = (
-    current: IngestRequest,
+  const addedBytes = (
     session?: SessionSnapshot,
     sourceUpdate?: NonNullable<IngestRequest["sourceUpdates"]>[number]
-  ): IngestRequest => ({
-    device,
-    sessions: session ? [...current.sessions, session] : current.sessions,
-    sourceUpdates: sourceUpdate
-      ? [...(current.sourceUpdates ?? []), sourceUpdate]
-      : current.sourceUpdates,
-  });
-  const fitsBatch = (candidate: IngestRequest, messageCount: number) =>
-    candidate.sessions.length <= MAX_BATCH_SESSIONS &&
-    messageCount <= MAX_BATCH_MESSAGES &&
-    (candidate.sourceUpdates?.length ?? 0) <= MAX_BATCH_SOURCE_UPDATES &&
-    byteLength(candidate) <= maxBatchBytes;
+  ): number => {
+    let bytes = 0;
+    if (session) {
+      // A comma separates the new element from any existing ones.
+      bytes += byteLength(session) + (batch.sessions.length > 0 ? 1 : 0);
+    }
+    if (sourceUpdate) {
+      bytes +=
+        byteLength(sourceUpdate) +
+        ((batch.sourceUpdates?.length ?? 0) > 0 ? 1 : 0);
+    }
+    return bytes;
+  };
+  const fits = (
+    session: SessionSnapshot | undefined,
+    sourceUpdate:
+      | NonNullable<IngestRequest["sourceUpdates"]>[number]
+      | undefined,
+    messageCount: number
+  ): boolean =>
+    batch.sessions.length + (session ? 1 : 0) <= MAX_BATCH_SESSIONS &&
+    batchMessageCount + messageCount <= MAX_BATCH_MESSAGES &&
+    (batch.sourceUpdates?.length ?? 0) + (sourceUpdate ? 1 : 0) <=
+      MAX_BATCH_SOURCE_UPDATES &&
+    batchBytes + addedBytes(session, sourceUpdate) <= maxBatchBytes;
   const add = async (
     session?: SessionSnapshot,
     sourceUpdate?: NonNullable<IngestRequest["sourceUpdates"]>[number]
   ) => {
     const messageCount = session?.messages.length ?? 0;
-    const candidate = appendToBatch(batch, session, sourceUpdate);
-    if (!fitsBatch(candidate, batchMessageCount + messageCount)) {
+    if (!fits(session, sourceUpdate, messageCount)) {
       await flush();
-      const single = appendToBatch(batch, session, sourceUpdate);
-      if (!fitsBatch(single, messageCount)) {
+      if (!fits(session, sourceUpdate, messageCount)) {
         throw new Error(
           `Session ${session?.sessionId ?? sourceUpdate?.sourcePath} exceeds the ingestion batch limit`
         );
       }
     }
-    batch = appendToBatch(batch, session, sourceUpdate);
+    batchBytes += addedBytes(session, sourceUpdate);
+    if (session) {
+      batch.sessions.push(session);
+    }
+    if (sourceUpdate) {
+      batch.sourceUpdates ??= [];
+      batch.sourceUpdates.push(sourceUpdate);
+    }
     batchMessageCount += messageCount;
   };
   for (const sourceUpdate of plan.sourceUpdates) {
@@ -806,6 +889,13 @@ interface ClientUpdatePolicy {
   windowEndHour: number;
   windowStartHour: number;
 }
+
+const clientUpdatePolicySchema = z.object({
+  channel: z.enum(["nightly", "stable"]),
+  enabled: z.boolean(),
+  windowEndHour: z.number().int().min(0).max(23),
+  windowStartHour: z.number().int().min(0).max(23),
+});
 
 const isInUpdateWindow = (policy: ClientUpdatePolicy): boolean => {
   const hour = new Date().getHours();
@@ -848,11 +938,14 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
       signal: AbortSignal.timeout(5000),
     });
     if (!response.ok) {
+      await response.body?.cancel();
       return;
     }
     setSettingTimestamp("gateway_update_policy_checked_at");
-    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
-    const policy = (await response.json()) as ClientUpdatePolicy;
+    // The gateway response drives a self-update, so validate it strictly.
+    const policy: ClientUpdatePolicy = clientUpdatePolicySchema.parse(
+      await response.json()
+    );
     if (
       !policy.enabled ||
       !isInUpdateWindow(policy) ||
@@ -926,6 +1019,7 @@ const applyProviderSettings = async (): Promise<void> => {
       }
     );
     if (!policyResponse.ok) {
+      await policyResponse.body?.cancel();
       cursorDebug("policy request failed", {
         status: policyResponse.status,
         statusText: policyResponse.statusText,
@@ -984,6 +1078,7 @@ const reportCursorStatus = async (): Promise<void> => {
       method: "POST",
       signal: AbortSignal.timeout(5000),
     });
+    await response.body?.cancel();
     cursorDebug("status reported", { status: response.status });
   } catch (error) {
     console.warn("TokTracker: Cursor dashboard status failed", error);

@@ -43,13 +43,19 @@ const xmlEscape = (value: string): string =>
     .replaceAll(">", "&gt;");
 
 // Unit values are not JSON. Escape whitespace as systemd C-style escapes so
-// executable paths remain valid without relying on shell-style quoting.
+// executable paths remain valid without relying on shell-style quoting, and
+// double "%" so paths cannot trigger specifier expansion.
 const systemdEscape = (value: string): string =>
-  value.replaceAll(
-    /[\s\\"]/gu,
-    (character) =>
-      `\\x${(character.codePointAt(0) ?? 0).toString(16).padStart(2, "0")}`
-  );
+  value
+    .replaceAll(
+      /[\s\\"']/gu,
+      (character) =>
+        `\\x${(character.codePointAt(0) ?? 0).toString(16).padStart(2, "0")}`
+    )
+    .replaceAll("%", "%%");
+// ExecStart additionally expands $VARIABLES, so "$" must be doubled there.
+const systemdExecEscape = (value: string): string =>
+  systemdEscape(value).replaceAll("$", "$$$$");
 
 const run = (command: string[]): boolean => {
   const result = Bun.spawnSync(command, {
@@ -80,7 +86,7 @@ export const installService = async (
     await mkdir(unitDirectory, { recursive: true });
     await Bun.write(
       unitPath,
-      `[Unit]\nDescription=TokTracker ${serviceRole}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${systemdEscape(workingDirectory)}\nExecStart=${systemdEscape(process.execPath)} ${systemdEscape(serviceEntrypoint)} run-service\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`
+      `[Unit]\nDescription=TokTracker ${serviceRole}\nAfter=network-online.target\nWants=network-online.target\n\n[Service]\nType=simple\nWorkingDirectory=${systemdEscape(workingDirectory)}\nExecStart=${systemdExecEscape(process.execPath)} ${systemdExecEscape(serviceEntrypoint)} run-service\nRestart=on-failure\nRestartSec=5\n\n[Install]\nWantedBy=default.target\n`
     );
     const installed =
       run(["systemctl", "--user", "daemon-reload"]) &&

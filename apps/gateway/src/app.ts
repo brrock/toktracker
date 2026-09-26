@@ -1,15 +1,17 @@
 /* eslint-disable node/callback-return -- Hono next() is a promise continuation, not a Node callback. */
-import { timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import path from "node:path";
 
 import {
   decryptPayload,
   isEncryptedPayload,
-  isIngestRequest,
+  parseIngestRequest,
 } from "@toktracker/shared";
-import type { TimeRange } from "@toktracker/shared";
+import type { JsonValue, TimeRange } from "@toktracker/shared";
 import { clampCursorSyncIntervalMs } from "@toktracker/token-calc";
 import { Hono } from "hono";
+import { bodyLimit } from "hono/body-limit";
+import { compress } from "hono/compress";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
@@ -30,6 +32,22 @@ const cursorDebug = (...details: unknown[]): void => {
   }
 };
 const MAX_PAIRING_BODY_BYTES = 4096;
+const MAX_API_BODY_BYTES = 64 * 1024;
+const PAIRING_FAILURE_WINDOW_MS = 5 * 60 * 1000;
+const MAX_PAIRING_FAILURES = 20;
+const IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
+const JSON_CONTENT_TYPE = /^application\/(?:[\w.+-]+\+)?json\s*(?:;|$)/iu;
+const LOOPBACK_HOSTNAMES = new Set(["localhost", "[::1]", "::1"]);
+const CLIENT_ROUTES = new Set([
+  "/api/health",
+  "/api/v1/ingest",
+  "/api/v1/client-update-policy",
+  "/api/v1/client-cursor-policy",
+  "/api/v1/client-cursor-status",
+  "/api/v1/client-cursor-commands/ack",
+  "/api/v1/client-provider-policy",
+]);
+const SAFE_METHODS = new Set(["GET", "HEAD", "OPTIONS"]);
 const MAX_FILTER_VALUES = 100;
 const MAX_PAGE_SIZE = 200;
 const DEFAULT_PAGE_SIZE = 20;
@@ -43,7 +61,6 @@ const PUBLIC_AUTH_PATHS = new Set([
   "/api/v1/auth/refresh",
   "/api/v1/auth/logout",
 ]);
-const jsonValueSchema = z.json();
 const pairingRequestSchema = z.object({
   code: z.string().max(64),
   deviceName: z.string().trim().min(1).max(128),
@@ -108,21 +125,74 @@ const cloudAgentAccountRequestSchema = z.object({
 });
 const timeRangeSchema = z.enum(["day", "week", "month", "year", "all"]);
 
+const sha256 = (value: string): Buffer =>
+  createHash("sha256").update(value).digest();
+
+// Comparing fixed-length digests keeps the check constant-time without
+// revealing the configured key's length through an early length mismatch.
 const validAccessKey = (
-  expectedKey: string | undefined,
+  expectedDigest: Buffer | undefined,
   authorization: string | undefined
 ): boolean => {
-  if (!expectedKey) {
+  if (!expectedDigest || !authorization?.startsWith("Bearer ")) {
     return false;
   }
-  const submittedKey = authorization?.startsWith("Bearer ")
-    ? authorization.slice("Bearer ".length)
-    : "";
-  const expected = Buffer.from(expectedKey);
-  const submitted = Buffer.from(submittedKey);
-  return (
-    expected.length === submitted.length && timingSafeEqual(expected, submitted)
+  return timingSafeEqual(
+    expectedDigest,
+    sha256(authorization.slice("Bearer ".length))
   );
+};
+
+const isLoopbackHost = (hostHeader: string | undefined): boolean => {
+  if (!hostHeader) {
+    return false;
+  }
+  let hostname: string;
+  try {
+    ({ hostname } = new URL(`http://${hostHeader}`));
+  } catch {
+    return false;
+  }
+  return (
+    LOOPBACK_HOSTNAMES.has(hostname) || /^127(?:\.\d{1,3}){3}$/u.test(hostname)
+  );
+};
+
+const hasRequestBody = (
+  headers: (name: string) => string | undefined
+): boolean => {
+  const contentLength = headers("content-length");
+  return (
+    Boolean(headers("transfer-encoding")) ||
+    (contentLength !== undefined && contentLength !== "0")
+  );
+};
+
+const redactCursorSettings = <Settings extends { cloudAgentApiKey?: string }>(
+  settings: Settings
+): Omit<Settings, "cloudAgentApiKey"> & {
+  cloudAgentApiKeyConfigured: boolean;
+} => {
+  const { cloudAgentApiKey, ...rest } = settings;
+  return { ...rest, cloudAgentApiKeyConfigured: Boolean(cloudAgentApiKey) };
+};
+
+const createPairingLimiter = () => {
+  let failures: number[] = [];
+  const prune = (now: number): void => {
+    failures = failures.filter(
+      (timestamp) => now - timestamp < PAIRING_FAILURE_WINDOW_MS
+    );
+  };
+  return {
+    blocked: (now: number): boolean => {
+      prune(now);
+      return failures.length >= MAX_PAIRING_FAILURES;
+    },
+    fail: (now: number): void => {
+      failures.push(now);
+    },
+  };
 };
 
 const setDashboardCookies = (
@@ -180,6 +250,24 @@ export const createApp = (
   dashboardAuthRequired = true
 ): Hono => {
   const app = new Hono();
+  const accessKeyDigest = accessKey ? sha256(accessKey) : undefined;
+  const pairingLimiter = createPairingLimiter();
+  const payloadTooLarge = bodyLimit({
+    maxSize: MAX_BODY_BYTES,
+    onError: (context) =>
+      context.json({ error: "Ingestion payload is too large" }, 413),
+  });
+  const pairingTooLarge = bodyLimit({
+    maxSize: MAX_PAIRING_BODY_BYTES,
+    onError: (context) =>
+      context.json({ error: "Pairing request is too large" }, 413),
+  });
+  const apiBodyTooLarge = bodyLimit({
+    maxSize: MAX_API_BODY_BYTES,
+    onError: (context) => context.json({ error: "Request is too large" }, 413),
+  });
+  // Summary JSON and the dashboard bundle compress roughly 5x.
+  app.use("*", compress());
   app.use(
     "*",
     secureHeaders({
@@ -207,29 +295,42 @@ export const createApp = (
     app.use("/api/*", cors({ origin: allowedOrigin }));
   }
   app.use("/api/*", async (context, next) => {
+    // Without a shared key the gateway only listens on loopback. Rejecting
+    // other Host names blocks DNS-rebinding pages from reading the
+    // unauthenticated client routes (which include provider credentials).
+    const host = context.req.header("host") ?? new URL(context.req.url).host;
+    if (!accessKey && !isLoopbackHost(host)) {
+      return context.json({ error: "Host is not allowed" }, 403);
+    }
+    // Cross-site pages can only send form or text bodies without a CORS
+    // preflight. Requiring JSON for requests with a body blocks CSRF writes.
+    if (
+      !SAFE_METHODS.has(context.req.method) &&
+      hasRequestBody((name) => context.req.header(name)) &&
+      !JSON_CONTENT_TYPE.test(context.req.header("content-type") ?? "")
+    ) {
+      return context.json({ error: "Requests must be JSON" }, 415);
+    }
+    if (context.req.path === "/api/v1/ingest") {
+      return await payloadTooLarge(context, next);
+    }
+    if (context.req.path === "/api/v1/auth/pair") {
+      return await pairingTooLarge(context, next);
+    }
+    return await apiBodyTooLarge(context, next);
+  });
+  app.use("/api/*", async (context, next) => {
     if (PUBLIC_AUTH_PATHS.has(context.req.path)) {
       return next();
     }
-    const hasSharedKey = validAccessKey(
-      accessKey,
-      context.req.header("authorization")
-    );
-    const accessToken = getCookie(context, ACCESS_COOKIE);
-    const hasDashboardSession = Boolean(
-      accessToken && store.authenticateDashboard(accessToken)
-    );
-    const isClientRoute =
-      context.req.path === "/api/health" ||
-      context.req.path === "/api/v1/ingest" ||
-      context.req.path === "/api/v1/client-update-policy" ||
-      context.req.path === "/api/v1/client-cursor-policy" ||
-      context.req.path === "/api/v1/client-cursor-status" ||
-      context.req.path === "/api/v1/client-cursor-commands/ack" ||
-      context.req.path === "/api/v1/client-provider-policy";
-    if (isClientRoute) {
+    if (CLIENT_ROUTES.has(context.req.path)) {
       const encryptedIngestCanAuthenticateItself =
         context.req.path === "/api/v1/ingest";
-      if (accessKey && !hasSharedKey && !encryptedIngestCanAuthenticateItself) {
+      if (
+        accessKey &&
+        !encryptedIngestCanAuthenticateItself &&
+        !validAccessKey(accessKeyDigest, context.req.header("authorization"))
+      ) {
         return context.json(
           { error: "A valid ingestion key is required" },
           401
@@ -238,22 +339,27 @@ export const createApp = (
       await next();
       return;
     }
-    if (dashboardAuthRequired && !hasDashboardSession) {
+    if (!dashboardAuthRequired) {
+      await next();
+      return;
+    }
+    const accessToken = getCookie(context, ACCESS_COOKIE);
+    if (!accessToken || !store.authenticateDashboard(accessToken)) {
       return context.json({ error: "Dashboard pairing is required" }, 401);
     }
     await next();
   });
   app.post("/api/v1/auth/pair", async (context) => {
-    const submittedText = await context.req.text();
-    if (
-      new TextEncoder().encode(submittedText).byteLength >
-      MAX_PAIRING_BODY_BYTES
-    ) {
-      return context.json({ error: "Pairing request is too large" }, 413);
+    const now = Date.now();
+    if (pairingLimiter.blocked(now)) {
+      return context.json(
+        { error: "Too many pairing attempts. Try again later." },
+        429
+      );
     }
     let request: z.infer<typeof pairingRequestSchema>;
     try {
-      request = pairingRequestSchema.parse(JSON.parse(submittedText));
+      request = pairingRequestSchema.parse(await context.req.json());
     } catch {
       return context.json({ error: "Invalid pairing request" }, 400);
     }
@@ -262,6 +368,7 @@ export const createApp = (
       request.deviceName
     );
     if (!credentials) {
+      pairingLimiter.fail(now);
       return context.json({ error: "Pairing code is invalid or expired" }, 401);
     }
     setDashboardCookies(context, credentials);
@@ -379,17 +486,19 @@ export const createApp = (
   });
   app.get("/api/v1/settings/cursor", (context) =>
     context.json({
-      ...store.cursorDashboardOverview(),
+      ...redactCursorSettings(store.cursorDashboardOverview()),
       cloudAgentAccounts: store.cloudAgentAccountOverview(),
     })
   );
-  app.get("/api/v1/settings/providers", (context) =>
-    context.json({
-      ...store.providerDashboardSettings(),
+  app.get("/api/v1/settings/providers", (context) => {
+    const settings = store.providerDashboardSettings();
+    return context.json({
       cloudAgentAccounts: store.cloudAgentAccountOverview(),
+      copilot: settings.copilot,
+      cursor: redactCursorSettings(settings.cursor),
       devices: store.cursorDashboardOverview().devices,
-    })
-  );
+    });
+  });
   app.post("/api/v1/settings/cursor/cloud-agent-accounts", async (context) => {
     let body: z.infer<typeof cloudAgentAccountRequestSchema>;
     try {
@@ -468,23 +577,24 @@ export const createApp = (
     } catch {
       return context.json({ error: "Invalid provider settings" }, 400);
     }
-    return context.json(
-      store.setProviderDashboardSettings({
-        copilot: settings.copilot,
-        cursor: {
-          cloudAgentApiKey: settings.cursor.cloudAgentApiKey,
-          enabled: settings.cursor.enabled,
-          includeAutomations: settings.cursor.includeAutomations ?? false,
-          includeCloudAgents: settings.cursor.includeCloudAgents ?? true,
-          syncIntervalMs: clampCursorSyncIntervalMs(
-            settings.cursor.syncIntervalMs
-          ),
-          t3Home: settings.cursor.t3Home,
-          useT3CodeLocalSessions:
-            settings.cursor.useT3CodeLocalSessions ?? false,
-        },
-      })
-    );
+    const saved = store.setProviderDashboardSettings({
+      copilot: settings.copilot,
+      cursor: {
+        cloudAgentApiKey: settings.cursor.cloudAgentApiKey,
+        enabled: settings.cursor.enabled,
+        includeAutomations: settings.cursor.includeAutomations ?? false,
+        includeCloudAgents: settings.cursor.includeCloudAgents ?? true,
+        syncIntervalMs: clampCursorSyncIntervalMs(
+          settings.cursor.syncIntervalMs
+        ),
+        t3Home: settings.cursor.t3Home,
+        useT3CodeLocalSessions: settings.cursor.useT3CodeLocalSessions ?? false,
+      },
+    });
+    return context.json({
+      copilot: saved.copilot,
+      cursor: redactCursorSettings(saved.cursor),
+    });
   });
   app.put("/api/v1/settings/cursor", async (context) => {
     let settings: z.infer<typeof cursorDashboardSettingsSchema>;
@@ -499,15 +609,17 @@ export const createApp = (
       syncIntervalMs: settings.syncIntervalMs,
     });
     return context.json(
-      store.setCursorDashboardSettings({
-        cloudAgentApiKey: settings.cloudAgentApiKey,
-        enabled: settings.enabled,
-        includeAutomations: settings.includeAutomations ?? false,
-        includeCloudAgents: settings.includeCloudAgents ?? true,
-        syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
-        t3Home: settings.t3Home,
-        useT3CodeLocalSessions: settings.useT3CodeLocalSessions ?? false,
-      })
+      redactCursorSettings(
+        store.setCursorDashboardSettings({
+          cloudAgentApiKey: settings.cloudAgentApiKey,
+          enabled: settings.enabled,
+          includeAutomations: settings.includeAutomations ?? false,
+          includeCloudAgents: settings.includeCloudAgents ?? true,
+          syncIntervalMs: clampCursorSyncIntervalMs(settings.syncIntervalMs),
+          t3Home: settings.t3Home,
+          useT3CodeLocalSessions: settings.useT3CodeLocalSessions ?? false,
+        })
+      )
     );
   });
   app.post("/api/v1/settings/cursor/import-desktop", async (context) => {
@@ -606,17 +718,12 @@ export const createApp = (
     return context.json({ ok: true });
   });
   app.post("/api/v1/ingest", async (context) => {
-    const contentLength = Number(context.req.header("content-length") ?? 0);
-    if (contentLength > MAX_BODY_BYTES) {
-      return context.json({ error: "Ingestion payload is too large" }, 413);
-    }
-    const submittedText = await context.req.text();
-    if (new TextEncoder().encode(submittedText).byteLength > MAX_BODY_BYTES) {
-      return context.json({ error: "Ingestion payload is too large" }, 413);
-    }
-    let submittedBody: z.infer<typeof jsonValueSchema>;
+    let submittedBody: JsonValue;
     try {
-      submittedBody = jsonValueSchema.parse(JSON.parse(submittedText));
+      // JSON.parse output is always a JSON value; re-validating the whole
+      // (up to 16 MiB) tree with z.json() only burned CPU before the real
+      // schema check below.
+      submittedBody = await context.req.json<JsonValue>();
     } catch {
       return context.json({ error: "Invalid JSON payload" }, 400);
     }
@@ -637,10 +744,11 @@ export const createApp = (
         );
       }
     }
-    if (!isIngestRequest(body)) {
+    const ingestRequest = parseIngestRequest(body);
+    if (!ingestRequest) {
       return context.json({ error: "Invalid ingestion payload" }, 400);
     }
-    const result = store.ingest(body);
+    const result = store.ingest(ingestRequest);
     if (result.banned) {
       return context.json({ error: "This device has been banned" }, 403);
     }
@@ -668,7 +776,7 @@ export const createApp = (
       ? context.json({ ok: true })
       : context.json({ error: "Usage device not found" }, 404)
   );
-  app.get("/api/v1/sessions/search", (context) => {
+  app.get("/api/v1/sessions/search", async (context) => {
     const devices = queryList(context.req.query("devices"));
     const agents = queryList(context.req.query("agents"));
     const limit = boundedInteger(
@@ -682,7 +790,7 @@ export const createApp = (
       Number.MAX_SAFE_INTEGER - MAX_PAGE_SIZE
     );
     return context.json(
-      store.sessions(
+      await store.sessionsAsync(
         context.req.query("q") ?? "",
         devices,
         agents,
@@ -699,7 +807,7 @@ export const createApp = (
       ? context.json(session)
       : context.json({ error: "Session not found" }, 404);
   });
-  app.get("/api/v1/summary", (context) => {
+  app.get("/api/v1/summary", async (context) => {
     const devices = queryList(context.req.query("devices"));
     const requestedRange = timeRangeSchema.safeParse(
       context.req.query("range")
@@ -709,7 +817,7 @@ export const createApp = (
       : "month";
     const includeAllDevices = context.req.query("includeAllDevices") === "true";
     return context.json(
-      store.summary(
+      await store.summaryAsync(
         devices,
         range,
         includeAllDevices,
@@ -719,6 +827,7 @@ export const createApp = (
       )
     );
   });
+  app.all("/api/*", (context) => context.json({ error: "Not found" }, 404));
 
   const dashboardDir = path.resolve(
     process.env.TOKTRACKER_DASHBOARD_DIR ??
@@ -735,16 +844,25 @@ export const createApp = (
       ? requestedPath
       : dashboardIndex;
     const candidate = Bun.file(candidatePath);
-    const file = (await candidate.exists())
-      ? candidate
-      : Bun.file(dashboardIndex);
+    let candidateIsFile = false;
+    if (candidatePath !== dashboardIndex && (await candidate.exists())) {
+      const candidateStat = await candidate.stat();
+      candidateIsFile = candidateStat.isFile();
+    }
+    const file = candidateIsFile ? candidate : Bun.file(dashboardIndex);
     if (!(await file.exists())) {
       return context.text(
         "Dashboard not built. Run `bun run build:dashboard`.",
         503
       );
     }
-    return new Response(file);
+    // Vite fingerprints everything under assets/, so those files can be
+    // cached forever; the HTML shell must be revalidated to pick up releases.
+    const cacheControl =
+      candidateIsFile && context.req.path.startsWith("/assets/")
+        ? IMMUTABLE_ASSET_CACHE_CONTROL
+        : "no-cache";
+    return new Response(file, { headers: { "cache-control": cacheControl } });
   });
   return app;
 };

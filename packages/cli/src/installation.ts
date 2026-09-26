@@ -154,6 +154,15 @@ const validateArchiveEntries = (contents: string): void => {
   }
 };
 
+const validateArchiveEntryTypes = (verboseContents: string): void => {
+  for (const line of verboseContents.split(/\r?\n/u)) {
+    const type = line.trimStart().charAt(0);
+    if (type && type !== "-" && type !== "d") {
+      throw new Error(`Unsupported entry type in release archive: ${line}`);
+    }
+  }
+};
+
 const validateInstalledVersion = async (
   role: ServiceRole,
   version: string,
@@ -189,6 +198,14 @@ export const extractVersionArchive = async (
     throw new Error("Could not inspect the release archive");
   }
   validateArchiveEntries(new TextDecoder().decode(listing.stdout));
+  // Release archives only contain regular files and directories. A symlink
+  // or hard link entry could redirect later entries outside the staging
+  // directory, so reject them before extracting.
+  const verboseListing = Bun.spawnSync(["tar", "-tvzf", archivePath]);
+  if (verboseListing.exitCode !== 0) {
+    throw new Error("Could not inspect the release archive");
+  }
+  validateArchiveEntryTypes(new TextDecoder().decode(verboseListing.stdout));
 
   await mkdir(versionsDirectory(role), { recursive: true });
   const staging = await mkdtemp(
@@ -202,6 +219,7 @@ export const extractVersionArchive = async (
       "-C",
       staging,
       "--strip-components=1",
+      "--no-same-owner",
     ]);
     if (extraction.exitCode !== 0) {
       throw new Error("Could not extract the release archive");
