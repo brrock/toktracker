@@ -3,11 +3,20 @@ import core from "ultracite/oxlint/core";
 import react from "ultracite/oxlint/react";
 import vitest from "ultracite/oxlint/vitest";
 
+// Oxlint 1.80 (required by @shadcn/lint) removed `react/react-compiler`,
+// which this Ultracite preset still enables; drop it until Ultracite catches up.
+const { "react/react-compiler": _removedRule, ...reactRules } =
+  react.rules ?? {};
+
 export default defineConfig({
-  extends: [core, react, vitest],
+  extends: [core, { ...react, rules: reactRules }, vitest],
   ignorePatterns: [...core.ignorePatterns, "tools/oxlint/anti-slop/**"],
   jsPlugins: [
     { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
+    // Design-system rules for the dashboard. Components and the Tailwind
+    // theme are discovered from apps/dashboard/components.json; no shadcn/*
+    // rules are enabled yet — add them under `rules` below.
+    "@shadcn/lint",
   ],
   overrides: [
     {
