@@ -171,3 +171,24 @@ export const relativeTime = (timestamp: number, now = Date.now()): string => {
   }
   return "just now";
 };
+
+/** Sums tokens and cost per distinct value of `key`, largest first. */
+export const groupUsage = <T extends { cost: number; tokens: number }>(
+  items: readonly T[],
+  key: (item: T) => string
+): { cost: number; name: string; tokens: number }[] => {
+  const groups = new Map<
+    string,
+    { cost: number; name: string; tokens: number }
+  >();
+  for (const item of items) {
+    const name = key(item);
+    const group = groups.get(name) ?? { cost: 0, name, tokens: 0 };
+    group.cost += item.cost;
+    group.tokens += item.tokens;
+    groups.set(name, group);
+  }
+  return [...groups.values()].toSorted(
+    (left, right) => right.tokens - left.tokens
+  );
+};

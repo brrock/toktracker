@@ -1,12 +1,8 @@
 import type { DashboardSummary, TimeRange } from "@toktracker/shared";
 import { Activity, CircleDollarSign, Cpu, Sparkles, Zap } from "lucide-react";
 
-import {
-  DailySpendChart,
-  UsageBreakdownChart,
-} from "@/components/dashboard/charts";
+import { CustomizableView } from "@/components/dashboard/customizable-view";
 import { SegmentedControl, Stat } from "@/components/dashboard/primitives";
-import { SessionTable } from "@/components/dashboard/session-table";
 import { useAppearance } from "@/components/theme-provider";
 import { greeting } from "@/lib/appearance";
 import { RANGE_OPTIONS, compact, money } from "@/lib/dashboard";
@@ -49,95 +45,82 @@ export const OverviewPage = ({
     weekday: "long",
   }).format(new Date());
 
+  const stats = (
+    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      <Stat
+        icon={<CircleDollarSign />}
+        label="Tracked spend"
+        value={money(data.totals.cost)}
+        trend={recent.map((point) => point.cost)}
+        note={`${money(data.totals.reportedCost)} reported · ${money(data.totals.estimatedCost)} estimated${data.totals.unpricedTokens ? ` · ${compact(data.totals.unpricedTokens)} unpriced tokens` : ""}`}
+      />
+      <Stat
+        icon={<Zap />}
+        label="Tokens used"
+        value={compact(data.totals.tokens)}
+        trend={recent.map((point) => point.tokens)}
+        note={`${compact(data.totals.messages)} messages`}
+      />
+      <Stat
+        icon={<Activity />}
+        label="Sessions"
+        value={compact(data.totals.sessions)}
+        note={`${money(averageCost)} average per session`}
+      />
+      <Stat
+        icon={<Cpu />}
+        label="Top model"
+        value={data.models[0]?.name ?? "No data yet"}
+        note={
+          data.models[0]
+            ? `${compact(data.models[0].tokens)} tokens`
+            : "Start the client to sync"
+        }
+      />
+    </section>
+  );
+
   return (
     <div className="animate-rise">
-      <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
-        <div>
-          <p className="text-xs font-medium uppercase tracking-[0.14em] text-primary">
-            {today}
-          </p>
-          <h2 className="text-gradient mt-1.5 text-3xl font-semibold">
-            {greeting(new Date(), appearance.displayName)}
-          </h2>
-          <p className="mt-1.5 flex items-center gap-1.5 text-sm text-muted-foreground">
-            <Sparkles className="size-3.5 text-primary" />
-            {insight(data, periodLabel)}
-          </p>
-        </div>
-        <SegmentedControl
-          label="Usage period"
-          options={RANGE_OPTIONS}
-          size="md"
-          value={range}
-          onChange={setRange}
-        />
-      </div>
-      <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <Stat
-          icon={<CircleDollarSign />}
-          label="Tracked spend"
-          value={money(data.totals.cost)}
-          trend={recent.map((point) => point.cost)}
-          note={`${money(data.totals.reportedCost)} reported · ${money(data.totals.estimatedCost)} estimated${data.totals.unpricedTokens ? ` · ${compact(data.totals.unpricedTokens)} unpriced tokens` : ""}`}
-        />
-        <Stat
-          icon={<Zap />}
-          label="Tokens used"
-          value={compact(data.totals.tokens)}
-          trend={recent.map((point) => point.tokens)}
-          note={`${compact(data.totals.messages)} messages`}
-        />
-        <Stat
-          icon={<Activity />}
-          label="Sessions"
-          value={compact(data.totals.sessions)}
-          note={`${money(averageCost)} average per session`}
-        />
-        <Stat
-          icon={<Cpu />}
-          label="Top model"
-          value={data.models[0]?.name ?? "No data yet"}
-          note={
-            data.models[0]
-              ? `${compact(data.models[0].tokens)} tokens`
-              : "Start the client to sync"
-          }
-        />
-      </section>
-      <section className="mt-4 grid gap-4 xl:grid-cols-[1.6fr_1fr]">
-        <DailySpendChart
-          daily={data.daily}
-          hourly={data.hourly}
-          periodLabel={periodLabel}
-          range={range}
-        />
-        <UsageBreakdownChart
-          entries={data.models}
-          kind="model"
-          periodLabel={periodLabel}
-          title="Usage by model"
-        />
-      </section>
-      <section className="mt-4 grid gap-4 lg:grid-cols-2">
-        <UsageBreakdownChart
-          entries={data.agents}
-          kind="agent"
-          periodLabel={periodLabel}
-          title="Usage by coding agent"
-        />
-        <UsageBreakdownChart
-          entries={data.projects}
-          kind="project"
-          periodLabel={periodLabel}
-          title="Usage by project"
-        />
-      </section>
-      <section className="mt-4">
-        <SessionTable
-          sessions={data.recentSessions.slice(0, 6)}
-          title="Recent sessions"
-        />
-      </section>
+      <CustomizableView
+        view="overview"
+        data={{
+          breakdowns: {
+            agent: data.agents,
+            model: data.models,
+            project: data.projects,
+          },
+          daily: data.daily,
+          hourly: data.hourly,
+          periodLabel,
+          range,
+          sessions: data.recentSessions.slice(0, 6),
+          stats,
+        }}
+        actions={
+          <SegmentedControl
+            label="Usage period"
+            options={RANGE_OPTIONS}
+            size="md"
+            value={range}
+            onChange={setRange}
+          />
+        }
+        heading={
+          <>
+            <p className="text-xs font-medium uppercase tracking-[0.14em] text-primary">
+              {today}
+            </p>
+            <h2 className="text-gradient mt-1.5 text-3xl font-semibold">
+              {greeting(new Date(), appearance.displayName)}
+            </h2>
+            <p className="mt-1.5 flex items-center gap-1.5 text-sm text-muted-foreground">
+              <Sparkles className="size-3.5 text-primary" />
+              {insight(data, periodLabel)}
+            </p>
+          </>
+        }
+      />
     </div>
   );
 };

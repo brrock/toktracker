@@ -1,8 +1,9 @@
-import { RotateCcw, Sparkles } from "lucide-react";
+import { LayoutGrid, RotateCcw, Sparkles } from "lucide-react";
 import { useNavigate } from "react-router-dom";
 
 import { useAppearance } from "@/components/theme-provider";
 import { Button } from "@/components/ui/button";
+import { resetAllLayouts } from "@/lib/layout";
 import { ONBOARDING_PATH } from "@/lib/onboarding";
 
 import {
@@ -86,6 +87,15 @@ export const AppearanceSettings = () => {
           description="Corner rounding, information density and the backdrop behind pages."
         >
           <DetailPickers />
+        </Section>
+        <Section
+          title="View layouts"
+          description="Every page has a Customise button for reordering, resizing and adding charts. Layouts are saved in this browser."
+        >
+          <Button variant="outline" onClick={resetAllLayouts}>
+            <LayoutGrid />
+            Reset all layouts
+          </Button>
         </Section>
         <Section title="Greeting" description="Shown on the overview page.">
           <input
