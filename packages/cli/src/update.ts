@@ -38,6 +38,9 @@ const githubReleaseSchema: z.ZodType<GithubRelease> = z.object({
   tag_name: z.string(),
 });
 
+const RELEASE_API_TIMEOUT_MS = 30_000;
+const RELEASE_DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
 const releaseHeaders = () => {
   const headers = {
     accept: "application/vnd.github+json",
@@ -52,7 +55,10 @@ const fetchReleaseJson = async <Value>(
   url: string,
   schema: z.ZodType<Value>
 ): Promise<Value> => {
-  const response = await fetch(url, { headers: releaseHeaders() });
+  const response = await fetch(url, {
+    headers: releaseHeaders(),
+    signal: AbortSignal.timeout(RELEASE_API_TIMEOUT_MS),
+  });
   if (!response.ok) {
     throw new Error(
       `GitHub returned HTTP ${response.status}: ${await response.text()}`
@@ -158,13 +164,22 @@ const verifyServiceStarted = async (
   return platform() === "win32";
 };
 
+const assertHttpsUrl = (value: string): void => {
+  if (new URL(value).protocol !== "https:") {
+    throw new Error(`Refusing to download release asset over ${value}`);
+  }
+};
+
 const downloadVerifiedArchive = async (
   asset: ReleaseAsset,
   checksumAsset: ReleaseAsset,
   archivePath: string
 ): Promise<void> => {
+  assertHttpsUrl(asset.browser_download_url);
+  assertHttpsUrl(checksumAsset.browser_download_url);
   const response = await fetch(asset.browser_download_url, {
     headers: releaseHeaders(),
+    signal: AbortSignal.timeout(RELEASE_DOWNLOAD_TIMEOUT_MS),
   });
   if (!response.ok) {
     throw new Error(`Download failed with HTTP ${response.status}`);
@@ -172,6 +187,7 @@ const downloadVerifiedArchive = async (
   await Bun.write(archivePath, response);
   const checksumResponse = await fetch(checksumAsset.browser_download_url, {
     headers: releaseHeaders(),
+    signal: AbortSignal.timeout(RELEASE_API_TIMEOUT_MS),
   });
   if (!checksumResponse.ok) {
     throw new Error(

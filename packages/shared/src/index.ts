@@ -77,23 +77,34 @@ const bytesToBase64 = (bytes: Uint8Array): string => {
 const base64ToBytes = (value: string): Uint8Array<ArrayBuffer> => {
   const binary = atob(value);
   const bytes = new Uint8Array(binary.length);
-  let index = 0;
-  for (const character of binary) {
-    bytes[index] = character.codePointAt(0) ?? 0;
-    index += 1;
+  // Indexed access avoids allocating one string per byte for multi-megabyte payloads.
+  for (let index = 0; index < binary.length; index += 1) {
+    bytes[index] = binary.codePointAt(index) ?? 0;
   }
   return bytes;
 };
 
-const encryptionKey = async (secret: string): Promise<CryptoKey> => {
-  const digest = await crypto.subtle.digest(
-    "SHA-256",
-    new TextEncoder().encode(secret)
-  );
-  return crypto.subtle.importKey("raw", digest, "AES-GCM", false, [
-    "decrypt",
-    "encrypt",
-  ]);
+// Deriving and importing the key on every request is measurable on busy
+// gateways; the secret is fixed for a process, so cache the most recent key.
+let cachedEncryptionKey:
+  | { key: Promise<CryptoKey>; secret: string }
+  | undefined;
+const encryptionKey = (secret: string): Promise<CryptoKey> => {
+  if (cachedEncryptionKey?.secret === secret) {
+    return cachedEncryptionKey.key;
+  }
+  const key = (async () => {
+    const digest = await crypto.subtle.digest(
+      "SHA-256",
+      new TextEncoder().encode(secret)
+    );
+    return crypto.subtle.importKey("raw", digest, "AES-GCM", false, [
+      "decrypt",
+      "encrypt",
+    ]);
+  })();
+  cachedEncryptionKey = { key, secret };
+  return key;
 };
 
 export const encryptPayload = async <Value>(
@@ -336,3 +347,14 @@ export const isIngestRequest = <Value>(
   value: Value
 ): value is Value & IngestRequest =>
   ingestRequestSchema.safeParse(value).success;
+
+/**
+ * Validates an ingestion request and returns only the schema's known fields,
+ * so unexpected properties from a client are never persisted.
+ */
+export const parseIngestRequest = <Value>(
+  value: Value
+): IngestRequest | undefined => {
+  const parsed = ingestRequestSchema.safeParse(value);
+  return parsed.success ? parsed.data : undefined;
+};

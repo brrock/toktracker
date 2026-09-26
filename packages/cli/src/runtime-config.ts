@@ -1,4 +1,4 @@
-import { chmod, mkdir } from "node:fs/promises";
+import { chmod, mkdir, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import path from "node:path";
 
@@ -57,12 +57,14 @@ export const writeConfig = async (
   values: Record<string, string>
 ): Promise<string> => {
   const destination = configPath(role);
-  await mkdir(applicationDirectory(), { recursive: true });
-  await mkdir(dataDirectory(role), { recursive: true });
+  await mkdir(applicationDirectory(), { mode: 0o700, recursive: true });
+  await mkdir(dataDirectory(role), { mode: 0o700, recursive: true });
   const contents = Object.entries(values)
     .map(([key, value]) => `${key}=${JSON.stringify(value)}`)
     .join("\n");
-  await Bun.write(destination, `${contents}\n`);
+  // The config holds the shared ingestion key: create it owner-only rather
+  // than writing with the default umask and tightening afterwards.
+  await writeFile(destination, `${contents}\n`, { mode: 0o600 });
   if (platform() !== "win32") {
     await chmod(destination, 0o600);
   }

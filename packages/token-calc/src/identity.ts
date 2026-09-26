@@ -29,16 +29,17 @@ export function inferProvider(model: string): string | undefined {
   return undefined;
 }
 
+const PROVIDER_ALIASES: ReadonlyMap<string, string> = new Map([
+  ["azure-openai", "azure"],
+  ["copilot", "github-copilot"],
+  ["github", "github-copilot"],
+  ["google-generative-ai", "google"],
+  ["google-vertex", "google"],
+]);
+
 export function canonicalProvider(provider: string): string {
   const id = provider.trim().toLowerCase();
-  const aliases = {
-    "azure-openai": "azure",
-    copilot: "github-copilot",
-    github: "github-copilot",
-    "google-generative-ai": "google",
-    "google-vertex": "google",
-  } as const;
-  return Object.entries(aliases).find(([alias]) => alias === id)?.[1] ?? id;
+  return PROVIDER_ALIASES.get(id) ?? id;
 }
 
 interface NormalizedWorkspace {

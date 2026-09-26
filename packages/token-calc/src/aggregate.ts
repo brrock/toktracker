@@ -106,9 +106,10 @@ export const summarize = (
       date: message.date,
       tokens: amount,
     });
-    add(hourly, localHour(message.timestamp), {
+    const hour = localHour(message.timestamp);
+    add(hourly, hour, {
       cost: message.cost,
-      date: localHour(message.timestamp),
+      date: hour,
       tokens: amount,
     });
     add(agents, message.client, {

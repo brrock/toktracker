@@ -65,7 +65,7 @@ const stripProviderPrefix = (name: string): string => {
   return name;
 };
 
-export function canonicalModelId(id: string): string {
+function computeCanonicalModelId(id: string): string {
   let name = id.toLowerCase();
   const tier = name.match(/^(.*)(?:\s*)\(([^()]*)\)$/);
   if (tier?.[1] && tiers.has(tier[2]!.trim())) {
@@ -87,6 +87,43 @@ export function canonicalModelId(id: string): string {
   return stripProviderPrefix(name);
 }
 
+// Canonicalization runs several regexes and is called for every message in
+// every dashboard summary, but the set of distinct model IDs is tiny.
+const MAX_CANONICAL_MODEL_CACHE = 10_000;
+const canonicalModelCache = new Map<string, string>();
+
+export function canonicalModelId(id: string): string {
+  const cached = canonicalModelCache.get(id);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const canonical = computeCanonicalModelId(id);
+  if (canonicalModelCache.size >= MAX_CANONICAL_MODEL_CACHE) {
+    canonicalModelCache.clear();
+  }
+  canonicalModelCache.set(id, canonical);
+  return canonical;
+}
+
+const padDatePart = (value: number): string =>
+  value.toString().padStart(2, "0");
+
+/**
+ * Local YYYY-MM-DD, equivalent to toLocaleDateString("en-CA") without the
+ * per-call Intl formatting cost (this runs once per parsed message).
+ */
+function localDate(timestamp: number): string {
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) {
+    return "Invalid Date";
+  }
+  const year = date.getFullYear();
+  if (year < 1000 || year > 9999) {
+    return date.toLocaleDateString("en-CA");
+  }
+  return `${year}-${padDatePart(date.getMonth() + 1)}-${padDatePart(date.getDate())}`;
+}
+
 export function makeMessage(
   input: Omit<
     UsageMessage,
@@ -97,9 +134,7 @@ export function makeMessage(
   return {
     ...input,
     costSource: input.costSource ?? "unknown",
-    date: Number.isFinite(input.timestamp)
-      ? new Date(input.timestamp).toLocaleDateString("en-CA")
-      : "",
+    date: Number.isFinite(input.timestamp) ? localDate(input.timestamp) : "",
     isTurnStart: input.isTurnStart ?? false,
     messageCount: input.messageCount ?? 1,
   };

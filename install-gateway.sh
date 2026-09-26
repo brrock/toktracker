@@ -35,8 +35,8 @@ VERSION="${REMAINDER#*|}"
 TEMPORARY="$(mktemp -d)"
 trap 'rm -rf "$TEMPORARY"' EXIT
 ARCHIVE="$TEMPORARY/${ASSET_URL##*/}"
-curl --fail --location "$ASSET_URL" --output "$ARCHIVE"
-curl --fail --location "$CHECKSUM_URL" --output "$ARCHIVE.sha256"
+curl --fail --location --proto "=https" --proto-redir "=https" "$ASSET_URL" --output "$ARCHIVE"
+curl --fail --location --proto "=https" --proto-redir "=https" "$CHECKSUM_URL" --output "$ARCHIVE.sha256"
 bun -e '
 const [archive, checksumFile] = process.argv.slice(1);
 const expected = (await Bun.file(checksumFile).text()).trim().split(/\s+/)[0];
@@ -60,9 +60,15 @@ if (!(await Bun.file(path.join(destination, "release.json")).exists())) {
     const parts = entry.replace(/\/$/, "").split("/");
     if (parts[0] !== "package" || parts.some((part) => part === "." || part === ".." || part.includes("\\"))) throw new Error(`Unsafe archive path: ${entry}`);
   }
+  const verbose = Bun.spawnSync(["tar", "-tvzf", archive]);
+  if (verbose.exitCode !== 0) throw new Error("Could not inspect release archive");
+  for (const line of new TextDecoder().decode(verbose.stdout).split(/\r?\n/)) {
+    const type = line.trimStart().charAt(0);
+    if (type && type !== "-" && type !== "d") throw new Error(`Unsupported archive entry: ${line}`);
+  }
   await mkdir(versions, { recursive: true });
   const staging = await mkdtemp(path.join(versions, `.staging-${version}-`));
-  const extracted = Bun.spawnSync(["tar", "-xzf", archive, "-C", staging, "--strip-components=1"]);
+  const extracted = Bun.spawnSync(["tar", "-xzf", archive, "-C", staging, "--strip-components=1", "--no-same-owner"]);
   if (extracted.exitCode !== 0) { await rm(staging, { recursive: true, force: true }); throw new Error("Could not extract release archive"); }
   const manifest = await Bun.file(path.join(staging, "release.json")).json();
   if (manifest.role !== role || manifest.version !== version || !(await Bun.file(path.join(staging, "apps", role, "dist", "cli.js")).exists())) { await rm(staging, { recursive: true, force: true }); throw new Error("Release contents do not match"); }

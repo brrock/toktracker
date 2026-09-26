@@ -27,6 +27,11 @@ const ACCESS_TOKEN_TTL_MS = 15 * 60 * 1000;
 const REFRESH_TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 const INGESTION_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
+// Queued commands can carry Cursor session tokens; never keep them at rest
+// indefinitely for devices that stopped polling.
+const CURSOR_COMMAND_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const DASHBOARD_LAST_SEEN_RESOLUTION_MS = 60 * 1000;
+const MILLISECOND_TIMESTAMP_THRESHOLD = 1_000_000_000_000;
 const SYNARA_HOST_CONTEXT =
   /<synara_host_context>[\s\S]*?<\/synara_host_context>/giu;
 
@@ -386,16 +391,22 @@ const cleanSessionTitle = (title: string | undefined): string | undefined => {
   return cleaned || undefined;
 };
 
-const withProject = (
-  message: UsageMessage,
-  storedProject: string | null
-): UsageMessage => ({
-  ...message,
-  sessionTitle: cleanSessionTitle(message.sessionTitle),
-  workspaceLabel: isHermesMessage(message)
-    ? undefined
-    : (message.workspaceLabel ?? storedProject ?? undefined),
-});
+const sessionKey = (row: {
+  device_id: string;
+  source_path: string;
+  session_id: string;
+}): string => `${row.device_id}\u0000${row.source_path}\u0000${row.session_id}`;
+
+/** Largest-cost message's model, without sorting a copy of the list. */
+const topCostModel = (messages: UsageMessage[]): string | undefined => {
+  let top: UsageMessage | undefined;
+  for (const message of messages) {
+    if (!top || message.cost > top.cost) {
+      top = message;
+    }
+  }
+  return top?.modelId;
+};
 
 const fuzzyMatch = (candidate: string, query: string): boolean => {
   let queryIndex = 0;
@@ -407,11 +418,13 @@ const fuzzyMatch = (candidate: string, query: string): boolean => {
   return queryIndex === query.length;
 };
 
+const sessionQueryTerms = (query: string): string[] =>
+  query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+
 const matchesSessionQuery = (
   session: SessionSummary,
-  query: string
+  terms: string[]
 ): boolean => {
-  const terms = query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
   if (terms.length === 0) {
     return true;
   }
@@ -442,31 +455,41 @@ const sessionProject = (messages: UsageMessage[]): string => {
   return "No project";
 };
 
-const messageFromRow = (row: StoredUsageRow): UsageMessage => ({
-  agent: row.agent ?? undefined,
-  client: row.client,
-  cost: row.cost,
-  costSource: row.cost_source,
-  date: row.date,
-  dedupKey: row.dedup_key ?? undefined,
-  durationMs: row.duration_ms ?? undefined,
-  isTurnStart: Boolean(row.is_turn_start),
-  messageCount: row.message_count,
-  modelId: row.model_id,
-  providerId: row.provider_id,
-  sessionId: row.session_id,
-  sessionTitle: cleanSessionTitle(row.session_title ?? undefined),
-  timestamp: row.timestamp,
-  tokens: {
-    cacheRead: row.cache_read_tokens,
-    cacheWrite: row.cache_write_tokens,
-    input: row.input_tokens,
-    output: row.output_tokens,
-    reasoning: row.reasoning_tokens,
-  },
-  workspaceKey: row.workspace_key ?? undefined,
-  workspaceLabel: row.workspace_label ?? undefined,
-});
+const messageFromRow = (
+  row: StoredUsageRow,
+  sessionApiIdentity: string,
+  storedProject: string | null
+): UsageMessage => {
+  const message: UsageMessage = {
+    agent: row.agent ?? undefined,
+    client: row.client,
+    cost: row.cost,
+    costSource: row.cost_source,
+    date: row.date,
+    dedupKey: row.dedup_key ?? undefined,
+    durationMs: row.duration_ms ?? undefined,
+    isTurnStart: Boolean(row.is_turn_start),
+    messageCount: row.message_count,
+    modelId: row.model_id,
+    providerId: row.provider_id,
+    sessionId: sessionApiIdentity,
+    sessionTitle: cleanSessionTitle(row.session_title ?? undefined),
+    timestamp: row.timestamp,
+    tokens: {
+      cacheRead: row.cache_read_tokens,
+      cacheWrite: row.cache_write_tokens,
+      input: row.input_tokens,
+      output: row.output_tokens,
+      reasoning: row.reasoning_tokens,
+    },
+    workspaceKey: row.workspace_key ?? undefined,
+    workspaceLabel: row.workspace_label ?? undefined,
+  };
+  message.workspaceLabel = isHermesMessage(message)
+    ? undefined
+    : (message.workspaceLabel ?? storedProject ?? undefined);
+  return message;
+};
 
 const addTokens = (total: TokenBreakdown, next: TokenBreakdown): void => {
   total.cacheRead += next.cacheRead;
@@ -698,9 +721,12 @@ export class Store {
     if (!token) {
       return false;
     }
+    // Avoid a database write on every dashboard request.
     this.db
-      .query("UPDATE dashboard_devices SET last_seen=? WHERE id=?")
-      .run(now, token.device_id);
+      .query(
+        "UPDATE dashboard_devices SET last_seen=? WHERE id=? AND last_seen<?"
+      )
+      .run(now, token.device_id, now - DASHBOARD_LAST_SEEN_RESOLUTION_MS);
     return true;
   }
 
@@ -830,7 +856,12 @@ export class Store {
   setCursorDashboardSettings(
     settings: CursorDashboardSettings
   ): CursorDashboardSettings {
-    const next = normalizeCursorDashboardSettings(settings);
+    // An omitted API key keeps the stored one, so the dashboard never needs
+    // to receive the secret to round-trip other settings.
+    const next = normalizeCursorDashboardSettings(
+      settings,
+      this.cursorDashboardSettings()
+    );
     this.db
       .query(
         "INSERT INTO gateway_settings(key,value) VALUES('cursor_dashboard',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
@@ -941,7 +972,10 @@ export class Store {
   ): ProviderDashboardSettings {
     const next: ProviderDashboardSettings = {
       copilot: normalizeCopilotDashboardSettings(settings.copilot),
-      cursor: normalizeCursorDashboardSettings(settings.cursor),
+      cursor: normalizeCursorDashboardSettings(
+        settings.cursor,
+        this.cursorDashboardSettings()
+      ),
     };
     this.db
       .query(
@@ -979,15 +1013,24 @@ export class Store {
       ...command,
       id: crypto.randomUUID(),
     });
+    const now = Date.now();
+    this.pruneCursorCommands(now);
     this.db
       .query(
         "INSERT INTO cursor_device_commands(id,device_id,created_at,command) VALUES(?,?,?,?)"
       )
-      .run(queued.id, deviceId, Date.now(), JSON.stringify(queued));
+      .run(queued.id, deviceId, now, JSON.stringify(queued));
     return queued;
   }
 
+  private pruneCursorCommands(now: number): void {
+    this.db
+      .query("DELETE FROM cursor_device_commands WHERE created_at<?")
+      .run(now - CURSOR_COMMAND_TTL_MS);
+  }
+
   cursorCommandsForDevice(deviceId: string): CursorDeviceCommand[] {
+    this.pruneCursorCommands(Date.now());
     // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const rows = this.db
       .query(
@@ -1012,14 +1055,16 @@ export class Store {
   }
 
   ackCursorCommands(deviceId: string, commandIds: string[]): number {
-    let removed = 0;
     const statement = this.db.query(
       "DELETE FROM cursor_device_commands WHERE device_id=? AND id=?"
     );
-    for (const commandId of commandIds) {
-      removed += statement.run(deviceId, commandId).changes;
-    }
-    return removed;
+    return this.db.transaction(() => {
+      let removed = 0;
+      for (const commandId of commandIds) {
+        removed += statement.run(deviceId, commandId).changes;
+      }
+      return removed;
+    })();
   }
 
   cursorDashboardOverview(): CursorDashboardOverview {
@@ -1180,12 +1225,19 @@ export class Store {
       )
       // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .all(...deviceIds) as StoredSessionRow[];
+    // Load usage once for every session instead of rescanning the whole
+    // usage table per session (which was quadratic in stored sessions).
+    const usage = this.usageForSessions(rows, deviceIds);
+    const terms = sessionQueryTerms(query);
+    const agents = new Set(agentNames);
     return rows
-      .map((row) => this.summarizeSession(row))
+      .map((row) =>
+        Store.summarizeSession(row, usage.get(sessionKey(row)) ?? [])
+      )
       .filter(
         (session) =>
-          (agentNames.length === 0 || agentNames.includes(session.client)) &&
-          matchesSessionQuery(session, query)
+          (agents.size === 0 || agents.has(session.client)) &&
+          matchesSessionQuery(session, terms)
       )
       .toSorted((a, b) => b[sessionSort] - a[sessionSort])
       .slice(offset, offset + limit);
@@ -1210,7 +1262,11 @@ export class Store {
         identity.sessionId
         // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       ) as StoredSessionRow | null;
-    return row ? this.summarizeSession(row, true) : undefined;
+    if (!row) {
+      return undefined;
+    }
+    const usage = this.usageForSession(row);
+    return Store.summarizeSession(row, usage, true);
   }
 
   summary(
@@ -1230,15 +1286,9 @@ export class Store {
       // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .all(...deviceIds) as StoredSessionRow[];
     const rangeStart = Store.rangeStart(range);
-    const messages: UsageMessage[] = [...this.usageForSessions(rows).values()]
-      .flat()
-      .filter((message) => {
-        const timestampMs =
-          Math.abs(message.timestamp) > 1_000_000_000_000
-            ? message.timestamp
-            : message.timestamp * 1000;
-        return timestampMs >= rangeStart;
-      });
+    const messages: UsageMessage[] = [
+      ...this.usageForSessions(rows, deviceIds, rangeStart).values(),
+    ].flat();
     const core = summarize(messages);
     if (range === "day") {
       core.hourly = Store.hourlyBuckets(core.hourly);
@@ -1281,16 +1331,20 @@ export class Store {
         if (!identity) {
           throw new Error("Could not decode stored session identity");
         }
+        let createdAt = Number.POSITIVE_INFINITY;
+        let lastSeen = Number.NEGATIVE_INFINITY;
+        for (const message of list) {
+          createdAt = Math.min(createdAt, message.timestamp);
+          lastSeen = Math.max(lastSeen, message.timestamp);
+        }
         return {
           client: list[0]?.client ?? "unknown",
           cost: list.reduce((value, message) => value + message.cost, 0),
-          createdAt: Math.min(...list.map((message) => message.timestamp)),
+          createdAt,
           deviceId: identity.deviceId,
           id,
-          lastSeen: Math.max(...list.map((message) => message.timestamp)),
-          model: canonicalModelId(
-            list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId ?? "unknown"
-          ),
+          lastSeen,
+          model: canonicalModelId(topCostModel(list) ?? "unknown"),
           project: sessionProject(list),
           sessionId: identity.sessionId,
           sourcePath: identity.sourcePath,
@@ -1389,69 +1443,107 @@ export class Store {
     );
   }
 
+  /**
+   * Loads usage for the given sessions in one ordered scan. The scan is
+   * narrowed in SQL by device and time range so large histories are not
+   * materialized just to be discarded.
+   */
   private usageForSessions(
-    rows: StoredSessionRow[]
+    rows: StoredSessionRow[],
+    deviceIds: string[] = [],
+    rangeStart = Number.NEGATIVE_INFINITY
   ): Map<string, UsageMessage[]> {
     const sessions = new Map(
       rows.map((row) => [
-        `${row.device_id}\u0000${row.source_path}\u0000${row.session_id}`,
-        row,
+        sessionKey(row),
+        { apiId: sessionApiId(sessionIdentity(row)), row },
       ])
     );
+    const conditions: string[] = [];
+    const parameters: (number | string)[] = [];
+    if (deviceIds.length > 0) {
+      conditions.push(`device_id IN (${deviceIds.map(() => "?").join(",")})`);
+      parameters.push(...deviceIds);
+    }
+    if (Number.isFinite(rangeStart)) {
+      conditions.push(
+        `(CASE WHEN abs(timestamp)>${MILLISECOND_TIMESTAMP_THRESHOLD} THEN timestamp ELSE timestamp*1000 END)>=?`
+      );
+      parameters.push(rangeStart);
+    }
+    const where =
+      conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
     const messages = new Map<string, UsageMessage[]>();
     // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
     const usageRows = this.db
       .query(
-        "SELECT * FROM session_usage ORDER BY device_id,source_path,session_id,message_index"
+        `SELECT * FROM session_usage${where} ORDER BY device_id,source_path,session_id,message_index`
       )
       // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
-      .all() as StoredUsageRow[];
+      .all(...parameters) as StoredUsageRow[];
     for (const usage of usageRows) {
-      const key = `${usage.device_id}\u0000${usage.source_path}\u0000${usage.session_id}`;
+      const key = sessionKey(usage);
       const session = sessions.get(key);
       if (!session) {
         continue;
       }
-      const list = messages.get(key) ?? [];
-      list.push({
-        ...withProject(messageFromRow(usage), session.project),
-        sessionId: sessionApiId(sessionIdentity(session)),
-      });
-      messages.set(key, list);
+      const message = messageFromRow(usage, session.apiId, session.row.project);
+      const list = messages.get(key);
+      if (list) {
+        list.push(message);
+      } else {
+        messages.set(key, [message]);
+      }
     }
     return messages;
   }
 
-  private summarizeSession(
+  private usageForSession(row: StoredSessionRow): UsageMessage[] {
+    const apiId = sessionApiId(sessionIdentity(row));
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const usageRows = this.db
+      .query(
+        "SELECT * FROM session_usage WHERE device_id=? AND source_path=? AND session_id=? ORDER BY message_index"
+      )
+      // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+      .all(row.device_id, row.source_path, row.session_id) as StoredUsageRow[];
+    return usageRows.map((usage) => messageFromRow(usage, apiId, row.project));
+  }
+
+  private static summarizeSession(
     row: StoredSessionRow,
+    list: UsageMessage[],
     includeParts = false
   ): SessionSummary {
     const identity = sessionIdentity(row);
     const id = sessionApiId(identity);
-    const key = `${row.device_id}\u0000${row.source_path}\u0000${row.session_id}`;
-    const list = this.usageForSessions([row]).get(key) ?? [];
-    const topModel = list.toSorted((a, b) => b.cost - a.cost)[0]?.modelId;
+    const topModel = topCostModel(list);
+    let cost = 0;
+    let createdAt = Number.POSITIVE_INFINITY;
+    let lastSeen = 0;
+    let tokens = 0;
+    for (const message of list) {
+      cost += message.cost;
+      createdAt = Math.min(createdAt, message.timestamp);
+      lastSeen = Math.max(
+        lastSeen,
+        message.timestamp + (message.durationMs ?? 0)
+      );
+      tokens += totalTokens(message.tokens);
+    }
     const summary: SessionSummary = {
       client: list[0]?.client ?? "unknown",
-      cost: list.reduce((value, message) => value + message.cost, 0),
-      createdAt: list[0]
-        ? Math.min(...list.map((message) => message.timestamp))
-        : 0,
+      cost,
+      createdAt: list.length > 0 ? createdAt : 0,
       deviceId: identity.deviceId,
       id,
-      lastSeen: Math.max(
-        0,
-        ...list.map((message) => message.timestamp + (message.durationMs ?? 0))
-      ),
+      lastSeen,
       model: topModel ? canonicalModelId(topModel) : "unknown",
       project: sessionProject(list),
       sessionId: identity.sessionId,
       sourcePath: identity.sourcePath,
       title: list.find((message) => message.sessionTitle?.trim())?.sessionTitle,
-      tokens: list.reduce(
-        (value, message) => value + totalTokens(message.tokens),
-        0
-      ),
+      tokens,
     };
     if (includeParts) {
       summary.parts = sessionParts(list);

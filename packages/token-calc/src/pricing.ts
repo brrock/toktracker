@@ -229,7 +229,7 @@ export const isUnpricedModelId = (modelId: string): boolean => {
   );
 };
 
-export const findModelPrice = (
+const lookupModelPrice = (
   catalog: PriceCatalog,
   modelId: string,
   providerId: string
@@ -283,6 +283,37 @@ export const findModelPrice = (
     key.endsWith(`/${terminalModel}`)
   );
   return modelMatches.length === 1 ? modelMatches[0]?.[1] : undefined;
+};
+
+// Fuzzy matching scans every catalog entry (thousands of models). Parsers
+// emit the same few model/provider pairs for every message, so memoize the
+// lookup per catalog object.
+const MAX_CACHED_PRICE_LOOKUPS = 10_000;
+const priceLookupCache = new WeakMap<
+  PriceCatalog,
+  Map<string, ModelPrice | undefined>
+>();
+
+export const findModelPrice = (
+  catalog: PriceCatalog,
+  modelId: string,
+  providerId: string
+): ModelPrice | undefined => {
+  let cache = priceLookupCache.get(catalog);
+  if (!cache) {
+    cache = new Map();
+    priceLookupCache.set(catalog, cache);
+  }
+  const key = `${providerId}\u0000${modelId}`;
+  if (cache.has(key)) {
+    return cache.get(key);
+  }
+  const price = lookupModelPrice(catalog, modelId, providerId);
+  if (cache.size >= MAX_CACHED_PRICE_LOOKUPS) {
+    cache.clear();
+  }
+  cache.set(key, price);
+  return price;
 };
 
 export const applyEstimatedPricing = (

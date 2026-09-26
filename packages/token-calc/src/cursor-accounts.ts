@@ -2,7 +2,7 @@
 // Cursor desktop auth and multi-account usage export, ported from tokscale-cli.
 import { Database } from "bun:sqlite";
 import { existsSync } from "node:fs";
-import { chmod, mkdir, unlink } from "node:fs/promises";
+import { chmod, mkdir, unlink, writeFile } from "node:fs/promises";
 import { homedir, platform } from "node:os";
 import { join } from "node:path";
 
@@ -293,8 +293,14 @@ export const saveCursorAccountStore = async (
   paths: CursorPaths,
   store: CursorAccountStore
 ): Promise<void> => {
-  await mkdir(paths.dataDir, { recursive: true });
-  await Bun.write(paths.credentialsPath, `${JSON.stringify(store, null, 2)}\n`);
+  await mkdir(paths.dataDir, { mode: 0o700, recursive: true });
+  // Create the file owner-only so session tokens are never briefly readable
+  // by other users; chmod also tightens files created by older versions.
+  await writeFile(
+    paths.credentialsPath,
+    `${JSON.stringify(store, null, 2)}\n`,
+    { mode: 0o600 }
+  );
   if (platform() !== "win32") {
     await chmod(paths.credentialsPath, 0o600);
   }
@@ -567,7 +573,7 @@ export const syncCursorUsageCaches = async (
   if (Object.keys(store.accounts).length === 0) {
     return { error: "Not authenticated", rows: 0, synced: false };
   }
-  await mkdir(paths.cacheDir, { recursive: true });
+  await mkdir(paths.cacheDir, { mode: 0o700, recursive: true });
   if (platform() !== "win32") {
     await chmod(paths.cacheDir, 0o700);
   }
