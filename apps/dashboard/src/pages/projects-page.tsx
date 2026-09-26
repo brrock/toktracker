@@ -40,10 +40,12 @@ export const ProjectsPage = ({
           <Link
             key={project.name}
             to={`/projects/${encodeURIComponent(project.name)}`}
-            className="rounded-lg border bg-card p-4 transition hover:border-primary/40 hover:shadow-md"
+            className="surface-card p-5 transition hover:-translate-y-0.5 hover:border-primary/40"
           >
             <div className="flex items-center gap-3">
-              <Boxes className="text-primary" size={19} />
+              <span className="grid size-10 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary ring-1 ring-primary/15">
+                <Boxes size={18} />
+              </span>
               <div className="min-w-0">
                 <h3 className="truncate font-semibold">{project.name}</h3>
                 <p className="text-xs text-muted-foreground">
@@ -51,7 +53,7 @@ export const ProjectsPage = ({
                 </p>
               </div>
             </div>
-            <div className="mt-6 grid grid-cols-3 gap-3 text-sm">
+            <div className="mt-5 grid grid-cols-3 gap-3 border-t pt-4 text-sm">
               <Metric label="Tokens" value={compact(project.tokens)} />
               <Metric label="Spend" value={money(project.cost)} />
               <Metric label="Sessions" value={compact(project.sessions)} />

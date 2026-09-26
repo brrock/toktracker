@@ -147,3 +147,27 @@ export const chartPeriodLabel = (
 export const chartHourLabel = chartHour;
 export const matchesQuery = (values: string[], query: string): boolean =>
   values.join(" ").toLowerCase().includes(query.trim().toLowerCase());
+
+const RELATIVE_UNITS: [Intl.RelativeTimeFormatUnit, number][] = [
+  ["year", 365 * 24 * 60 * 60 * 1000],
+  ["month", 30 * 24 * 60 * 60 * 1000],
+  ["week", 7 * 24 * 60 * 60 * 1000],
+  ["day", 24 * 60 * 60 * 1000],
+  ["hour", 60 * 60 * 1000],
+  ["minute", 60 * 1000],
+];
+const relativeFormatter = new Intl.RelativeTimeFormat("en-US", {
+  numeric: "auto",
+});
+export const relativeTime = (timestamp: number, now = Date.now()): string => {
+  if (timestamp <= 0) {
+    return "Unknown";
+  }
+  const elapsed = timestamp - now;
+  for (const [unit, milliseconds] of RELATIVE_UNITS) {
+    if (Math.abs(elapsed) >= milliseconds) {
+      return relativeFormatter.format(Math.round(elapsed / milliseconds), unit);
+    }
+  }
+  return "just now";
+};

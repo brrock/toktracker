@@ -1,46 +1,42 @@
-/* eslint-disable func-style, no-nested-ternary, react-refresh/only-export-components, react/hook-use-state, unicorn/no-nested-ternary */
-import * as React from "react";
+/* eslint-disable react-refresh/only-export-components */
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 
-type Theme = "dark" | "light" | "system";
-type ResolvedTheme = "dark" | "light";
-
-interface ThemeProviderProps {
-  children: React.ReactNode;
-  defaultTheme?: Theme;
-  storageKey?: string;
-  disableTransitionOnChange?: boolean;
-}
-
-interface ThemeProviderState {
-  theme: Theme;
-  setTheme: (theme: Theme) => void;
-}
+import {
+  APPEARANCE_STORAGE_KEY,
+  applyAppearance,
+  DEFAULT_APPEARANCE,
+  loadAppearance,
+  parseAppearance,
+  persistAppearance,
+  resolveMode,
+} from "@/lib/appearance";
+import type {
+  Appearance,
+  AppearanceMode,
+  ResolvedMode,
+} from "@/lib/appearance";
 
 const COLOR_SCHEME_QUERY = "(prefers-color-scheme: dark)";
-const isThemeValue = (value: string): value is Theme =>
-  value === "dark" || value === "light" || value === "system";
+const REDUCED_MOTION_QUERY = "(prefers-reduced-motion: reduce)";
 
-const ThemeProviderContext = React.createContext<
-  ThemeProviderState | undefined
->(undefined);
-
-function isTheme(value: string | null): value is Theme {
-  if (value === null) {
-    return false;
-  }
-
-  return isThemeValue(value);
+interface AppearanceState {
+  appearance: Appearance;
+  resetAppearance: () => void;
+  resolvedMode: ResolvedMode;
+  setMode: (mode: AppearanceMode) => void;
+  updateAppearance: (changes: Partial<Appearance>) => void;
 }
 
-function getSystemTheme(): ResolvedTheme {
-  if (window.matchMedia(COLOR_SCHEME_QUERY).matches) {
-    return "dark";
-  }
+const AppearanceContext = createContext<AppearanceState | undefined>(undefined);
 
-  return "light";
-}
-
-function disableTransitionsTemporarily() {
+const disableTransitionsTemporarily = (): (() => void) => {
   const style = document.createElement("style");
   style.append(
     document.createTextNode(
@@ -48,7 +44,6 @@ function disableTransitionsTemporarily() {
     )
   );
   document.head.append(style);
-
   return () => {
     window.getComputedStyle(document.body);
     requestAnimationFrame(() => {
@@ -57,186 +52,129 @@ function disableTransitionsTemporarily() {
       });
     });
   };
-}
+};
 
-function isEditableTarget(target: EventTarget | null) {
+const isEditableTarget = (target: EventTarget | null): boolean => {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
+  return (
+    target.isContentEditable ||
+    Boolean(target.closest("input, textarea, select, [contenteditable='true']"))
+  );
+};
 
-  if (target.isContentEditable) {
-    return true;
+const withViewTransition = (update: () => void): void => {
+  const prefersReducedMotion = window.matchMedia(REDUCED_MOTION_QUERY).matches;
+  if (!document.startViewTransition || prefersReducedMotion) {
+    update();
+    return;
   }
+  document.startViewTransition(update);
+};
 
-  const editableParent = target.closest(
-    "input, textarea, select, [contenteditable='true']"
+export const ThemeProvider = ({ children }: { children: React.ReactNode }) => {
+  const [appearance, setAppearance] = useState<Appearance>(loadAppearance);
+  const [systemDark, setSystemDark] = useState(
+    () => window.matchMedia(COLOR_SCHEME_QUERY).matches
   );
-  if (editableParent) {
-    return true;
-  }
+  const systemResolved: ResolvedMode = systemDark ? "dark" : "light";
+  const resolvedMode =
+    appearance.mode === "system" ? systemResolved : appearance.mode;
 
-  return false;
-}
+  useEffect(() => {
+    const restoreTransitions = disableTransitionsTemporarily();
+    applyAppearance(appearance);
+    restoreTransitions();
+    persistAppearance(appearance);
+  }, [appearance, systemDark]);
 
-export function ThemeProvider({
-  children,
-  defaultTheme = "system",
-  storageKey = "theme",
-  disableTransitionOnChange = true,
-  ...props
-}: ThemeProviderProps) {
-  const [theme, setThemeState] = React.useState<Theme>(() => {
-    const storedTheme = localStorage.getItem(storageKey);
-    if (isTheme(storedTheme)) {
-      return storedTheme;
-    }
-
-    return defaultTheme;
-  });
-
-  const applyTheme = React.useCallback(
-    (nextTheme: Theme) => {
-      const root = document.documentElement;
-      const resolvedTheme =
-        nextTheme === "system" ? getSystemTheme() : nextTheme;
-      const restoreTransitions = disableTransitionOnChange
-        ? disableTransitionsTemporarily()
-        : null;
-
-      root.classList.remove("light", "dark");
-      root.classList.add(resolvedTheme);
-
-      if (restoreTransitions) {
-        restoreTransitions();
-      }
-    },
-    [disableTransitionOnChange]
-  );
-
-  const setTheme = React.useCallback(
-    (nextTheme: Theme) => {
-      localStorage.setItem(storageKey, nextTheme);
-
-      const updateTheme = () => {
-        applyTheme(nextTheme);
-        setThemeState(nextTheme);
-      };
-      const prefersReducedMotion = window.matchMedia(
-        "(prefers-reduced-motion: reduce)"
-      ).matches;
-
-      if (!document.startViewTransition || prefersReducedMotion) {
-        updateTheme();
-        return;
-      }
-
-      document.startViewTransition(updateTheme);
-    },
-    [applyTheme, storageKey]
-  );
-
-  React.useEffect(() => {
-    applyTheme(theme);
-
-    if (theme !== "system") {
-      return;
-    }
-
+  useEffect(() => {
     const mediaQuery = window.matchMedia(COLOR_SCHEME_QUERY);
-    const handleChange = () => {
-      applyTheme("system");
-    };
-
+    const handleChange = (): void => setSystemDark(mediaQuery.matches);
     mediaQuery.addEventListener("change", handleChange);
+    return () => mediaQuery.removeEventListener("change", handleChange);
+  }, []);
 
-    return () => {
-      mediaQuery.removeEventListener("change", handleChange);
+  // Keep other tabs of the dashboard in sync.
+  useEffect(() => {
+    const handleStorageChange = (event: StorageEvent): void => {
+      if (event.key === APPEARANCE_STORAGE_KEY) {
+        setAppearance(parseAppearance(event.newValue));
+      }
     };
-  }, [theme, applyTheme]);
-
-  React.useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.repeat) {
-        return;
-      }
-
-      if (event.metaKey || event.ctrlKey || event.altKey) {
-        return;
-      }
-
-      if (isEditableTarget(event.target)) {
-        return;
-      }
-
-      if (event.key.toLowerCase() !== "d") {
-        return;
-      }
-
-      const nextTheme =
-        theme === "dark"
-          ? "light"
-          : theme === "light"
-            ? "dark"
-            : getSystemTheme() === "dark"
-              ? "light"
-              : "dark";
-
-      setTheme(nextTheme);
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, [setTheme, theme]);
-
-  React.useEffect(() => {
-    const handleStorageChange = (event: StorageEvent) => {
-      if (event.storageArea !== localStorage) {
-        return;
-      }
-
-      if (event.key !== storageKey) {
-        return;
-      }
-
-      if (isTheme(event.newValue)) {
-        setThemeState(event.newValue);
-        return;
-      }
-
-      setThemeState(defaultTheme);
-    };
-
     window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
+  }, []);
 
-    return () => {
-      window.removeEventListener("storage", handleStorageChange);
+  const updateAppearance = useCallback((changes: Partial<Appearance>): void => {
+    setAppearance((current) => ({ ...current, ...changes }));
+  }, []);
+
+  const setMode = useCallback(
+    (mode: AppearanceMode): void => {
+      const changesColors = resolveMode(mode) !== resolvedMode;
+      const update = (): void => {
+        const next = { ...appearance, mode };
+        applyAppearance(next);
+        setAppearance(next);
+      };
+      if (changesColors) {
+        withViewTransition(update);
+      } else {
+        update();
+      }
+    },
+    [appearance, resolvedMode]
+  );
+
+  const resetAppearance = useCallback((): void => {
+    setAppearance((current) => ({
+      ...DEFAULT_APPEARANCE,
+      displayName: current.displayName,
+    }));
+  }, []);
+
+  // Press "d" anywhere outside a text field to flip between light and dark.
+  useEffect(() => {
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      const isShortcut =
+        !event.repeat &&
+        !event.metaKey &&
+        !event.ctrlKey &&
+        !event.altKey &&
+        event.key.toLowerCase() === "d" &&
+        !isEditableTarget(event.target);
+      if (isShortcut) {
+        setMode(resolvedMode === "dark" ? "light" : "dark");
+      }
     };
-  }, [defaultTheme, storageKey]);
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [resolvedMode, setMode]);
 
-  const value = React.useMemo(
+  const value = useMemo(
     () => ({
-      setTheme,
-      theme,
+      appearance,
+      resetAppearance,
+      resolvedMode,
+      setMode,
+      updateAppearance,
     }),
-    [theme, setTheme]
+    [appearance, resetAppearance, resolvedMode, setMode, updateAppearance]
   );
 
   return (
-    <ThemeProviderContext.Provider {...props} value={value}>
+    <AppearanceContext.Provider value={value}>
       {children}
-    </ThemeProviderContext.Provider>
+    </AppearanceContext.Provider>
   );
-}
+};
 
-export const useTheme = () => {
-  const context = React.useContext(ThemeProviderContext);
-
+export const useAppearance = (): AppearanceState => {
+  const context = useContext(AppearanceContext);
   if (context === undefined) {
-    throw new Error("useTheme must be used within a ThemeProvider");
+    throw new Error("useAppearance must be used within a ThemeProvider");
   }
-
   return context;
 };

@@ -6,6 +6,11 @@ import { defineConfig } from "vite";
 
 // https://vite.dev/config/
 export default defineConfig({
+  build: {
+    // The gateway's CSP only allows same-origin fonts, so never inline font
+    // subsets as data: URIs.
+    assetsInlineLimit: (file) => (file.endsWith(".woff2") ? false : undefined),
+  },
   clearScreen: false,
   plugins: [react(), tailwindcss()],
   resolve: {

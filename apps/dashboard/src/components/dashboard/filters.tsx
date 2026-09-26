@@ -1,44 +1,9 @@
 import type { DashboardSummary } from "@toktracker/shared";
-import { Bot, Monitor, Moon, Sun } from "lucide-react";
+import { Bot, ChevronDown, MonitorSmartphone } from "lucide-react";
 
-import { useTheme } from "@/components/theme-provider";
 import { Checkbox } from "@/components/ui/checkbox";
 
 import { AgentLogo } from "./primitives";
-
-export const ThemeControl = () => {
-  const { setTheme, theme } = useTheme();
-  const themes = [
-    { icon: Sun, label: "Light", value: "light" },
-    { icon: Moon, label: "Dark", value: "dark" },
-    { icon: Monitor, label: "System", value: "system" },
-  ] as const;
-
-  return (
-    <div
-      className="flex rounded-md border bg-muted p-1"
-      aria-label="Color theme"
-    >
-      {themes.map((option) => {
-        const Icon = option.icon;
-        const selected = theme === option.value;
-        return (
-          <button
-            type="button"
-            key={option.value}
-            title={`${option.label} theme`}
-            aria-label={`${option.label} theme`}
-            aria-pressed={selected}
-            onClick={() => setTheme(option.value)}
-            className={`grid size-8 place-items-center rounded-lg transition ${selected ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            <Icon size={15} />
-          </button>
-        );
-      })}
-    </div>
-  );
-};
 
 export const DeviceFilter = ({
   devices,
@@ -67,14 +32,12 @@ export const DeviceFilter = ({
 
   return (
     <details className="group relative hidden shrink-0 sm:block">
-      <summary className="flex h-8 cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-2.5 text-xs [&::-webkit-details-marker]:hidden">
-        <span className="size-1.5 rounded-full bg-emerald-500" />
+      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg border bg-card px-3 text-xs font-medium transition hover:border-foreground/20 [&::-webkit-details-marker]:hidden">
+        <MonitorSmartphone className="size-3.5 text-muted-foreground" />
         {label}
-        <span className="text-[10px] text-muted-foreground transition group-open:rotate-180">
-          ⌄
-        </span>
+        <ChevronDown className="size-3.5 text-muted-foreground transition group-open:rotate-180" />
       </summary>
-      <div className="absolute right-0 top-10 z-30 w-64 rounded-lg border bg-popover p-2 text-popover-foreground shadow-lg">
+      <div className="absolute right-0 top-11 z-30 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl">
         <label
           htmlFor="all-devices"
           className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"
@@ -143,14 +106,12 @@ export const AgentFilter = ({
 
   return (
     <details className="group relative shrink-0">
-      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-md border bg-card px-3 text-sm [&::-webkit-details-marker]:hidden">
+      <summary className="flex h-9 cursor-pointer list-none items-center gap-2 rounded-lg border bg-card px-3 text-sm font-medium transition hover:border-foreground/20 [&::-webkit-details-marker]:hidden">
         <Bot size={15} className="text-muted-foreground" />
         {label}
-        <span className="text-[10px] text-muted-foreground transition group-open:rotate-180">
-          ⌄
-        </span>
+        <ChevronDown className="size-3.5 text-muted-foreground transition group-open:rotate-180" />
       </summary>
-      <div className="absolute right-0 top-11 z-30 w-64 rounded-lg border bg-popover p-2 text-popover-foreground shadow-lg">
+      <div className="absolute right-0 top-11 z-30 w-64 rounded-xl border bg-popover p-2 text-popover-foreground shadow-xl">
         <label
           htmlFor="all-coding-agents"
           className="flex w-full cursor-pointer items-center gap-2 rounded-md px-2 py-2 text-sm hover:bg-muted"

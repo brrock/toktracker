@@ -1,5 +1,5 @@
 import type { DashboardSummary } from "@toktracker/shared";
-import { CircleDollarSign, Zap } from "lucide-react";
+import { ArrowUpRight, CircleDollarSign, Zap } from "lucide-react";
 import { useParams } from "react-router-dom";
 
 import {
@@ -21,6 +21,7 @@ export const AgentsPage = ({
   const agents = data.agents.filter((agent) =>
     matchesQuery([agent.name], query)
   );
+  const totalTokens = data.agents.reduce((sum, agent) => sum + agent.tokens, 0);
   return (
     <PageHeading
       title="Agents"
@@ -34,27 +35,42 @@ export const AgentsPage = ({
           title="Usage by coding agent"
         />
       </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-        {agents.map((agent) => (
-          <Link
-            key={agent.name}
-            to={`/agents/${encodeURIComponent(agent.name)}`}
-            className="rounded-lg border bg-card p-4 transition hover:border-primary/40"
-          >
-            <div className="flex items-center gap-3">
-              <AgentLogo name={agent.name} size="size-10" />
-              <div>
-                <h3 className="font-semibold capitalize">{agent.name}</h3>
-                <p className="text-xs text-muted-foreground">
-                  {compact(agent.tokens)} tokens
-                </p>
+      <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+        {agents.map((agent) => {
+          const share = totalTokens ? (agent.tokens / totalTokens) * 100 : 0;
+          return (
+            <Link
+              key={agent.name}
+              to={`/agents/${encodeURIComponent(agent.name)}`}
+              className="surface-card group p-5 transition hover:-translate-y-0.5 hover:border-primary/40"
+            >
+              <div className="flex items-center gap-3">
+                <AgentLogo name={agent.name} size="size-10" />
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-semibold capitalize">{agent.name}</h3>
+                  <p className="text-xs text-muted-foreground">
+                    {compact(agent.tokens)} tokens
+                  </p>
+                </div>
+                <ArrowUpRight className="size-4 text-muted-foreground opacity-0 transition group-hover:opacity-100" />
               </div>
-            </div>
-            <div className="mt-6 text-2xl font-semibold">
-              {money(agent.cost)}
-            </div>
-          </Link>
-        ))}
+              <div className="mt-6 flex items-end justify-between gap-3">
+                <span className="font-heading text-2xl font-semibold tabular-nums">
+                  {money(agent.cost)}
+                </span>
+                <span className="text-xs tabular-nums text-muted-foreground">
+                  {Math.round(share)}% of tokens
+                </span>
+              </div>
+              <div className="mt-3 h-1.5 rounded-full bg-muted">
+                <div
+                  className="animate-grow-right h-full rounded-full bg-primary"
+                  style={{ width: `${Math.max(2, share)}%` }}
+                />
+              </div>
+            </Link>
+          );
+        })}
       </div>
       {!agents.length && <EmptyState>No agents match your search.</EmptyState>}
     </PageHeading>

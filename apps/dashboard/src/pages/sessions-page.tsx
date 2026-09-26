@@ -201,7 +201,7 @@ export const SessionPage = ({
         />
       </section>
       {session.parts && (
-        <section className="mt-6 overflow-x-auto rounded-xl border bg-card p-5">
+        <section className="surface-card mt-6 overflow-x-auto p-5">
           <h2 className="mb-4 font-semibold">Model usage</h2>
           <table className="w-full text-left text-sm">
             <thead className="border-b text-xs uppercase tracking-wide text-muted-foreground">
