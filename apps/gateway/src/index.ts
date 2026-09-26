@@ -14,5 +14,11 @@ if (!isLoopbackHost && !accessKey) {
   );
 }
 const app = createApp(new Store(), accessKey, dashboardAuthRequired);
-export default { fetch: app.fetch, hostname, port };
+// Development mode serves verbose error pages with stack traces.
+export default {
+  development: process.env.TOKTRACKER_DEV === "1",
+  fetch: app.fetch,
+  hostname,
+  port,
+};
 console.log(`TokTracker gateway listening on http://${hostname}:${port}`);

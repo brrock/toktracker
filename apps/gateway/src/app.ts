@@ -11,6 +11,7 @@ import type { JsonValue, TimeRange } from "@toktracker/shared";
 import { clampCursorSyncIntervalMs } from "@toktracker/token-calc";
 import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
+import { compress } from "hono/compress";
 import { deleteCookie, getCookie, setCookie } from "hono/cookie";
 import { cors } from "hono/cors";
 import { secureHeaders } from "hono/secure-headers";
@@ -265,6 +266,8 @@ export const createApp = (
     maxSize: MAX_API_BODY_BYTES,
     onError: (context) => context.json({ error: "Request is too large" }, 413),
   });
+  // Summary JSON and the dashboard bundle compress roughly 5x.
+  app.use("*", compress());
   app.use(
     "*",
     secureHeaders({
@@ -773,7 +776,7 @@ export const createApp = (
       ? context.json({ ok: true })
       : context.json({ error: "Usage device not found" }, 404)
   );
-  app.get("/api/v1/sessions/search", (context) => {
+  app.get("/api/v1/sessions/search", async (context) => {
     const devices = queryList(context.req.query("devices"));
     const agents = queryList(context.req.query("agents"));
     const limit = boundedInteger(
@@ -787,7 +790,7 @@ export const createApp = (
       Number.MAX_SAFE_INTEGER - MAX_PAGE_SIZE
     );
     return context.json(
-      store.sessions(
+      await store.sessionsAsync(
         context.req.query("q") ?? "",
         devices,
         agents,
@@ -804,7 +807,7 @@ export const createApp = (
       ? context.json(session)
       : context.json({ error: "Session not found" }, 404);
   });
-  app.get("/api/v1/summary", (context) => {
+  app.get("/api/v1/summary", async (context) => {
     const devices = queryList(context.req.query("devices"));
     const requestedRange = timeRangeSchema.safeParse(
       context.req.query("range")
@@ -814,7 +817,7 @@ export const createApp = (
       : "month";
     const includeAllDevices = context.req.query("includeAllDevices") === "true";
     return context.json(
-      store.summary(
+      await store.summaryAsync(
         devices,
         range,
         includeAllDevices,

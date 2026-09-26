@@ -1,6 +1,13 @@
 import type { SessionSort, TimeRange } from "@toktracker/shared";
 import { ArrowLeft, Search, Settings, Zap } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
 import {
   Navigate,
   Route,
@@ -10,27 +17,72 @@ import {
   useSearchParams,
 } from "react-router-dom";
 
-import { CommandPalette } from "@/components/dashboard/command-palette";
 import { DeviceFilter, ThemeControl } from "@/components/dashboard/filters";
 import { Navigation } from "@/components/dashboard/navigation";
 import { PairingDialog } from "@/components/dashboard/pairing-dialog";
 import { EmptyState } from "@/components/dashboard/primitives";
-import {
-  SettingsNavigation,
-  SettingsPage,
-} from "@/components/dashboard/settings";
 import { AUTH_REQUIRED_EVENT, apiFetch } from "@/lib/api";
 import { EMPTY_SUMMARY } from "@/lib/dashboard";
 import { Link, NAV_ITEMS } from "@/lib/navigation";
 import { dashboardSummarySchema, timeRangeSchema } from "@/lib/schemas";
 import { parseSettingsPath } from "@/lib/settings-path";
-import { AgentPage, AgentsPage } from "@/pages/agents-page";
-import { ModelPage } from "@/pages/model-page";
 import { OverviewPage } from "@/pages/overview-page";
-import { ProjectPage, ProjectsPage } from "@/pages/projects-page";
-import { SessionPage, SessionsPage } from "@/pages/sessions-page";
+
+// The overview is the landing page; everything else loads on demand so the
+// first paint does not wait for settings, search and detail pages.
+const CommandPalette = lazy(async () => {
+  const module = await import("@/components/dashboard/command-palette");
+  return { default: module.CommandPalette };
+});
+const SettingsNavigation = lazy(async () => {
+  const module = await import("@/components/dashboard/settings");
+  return { default: module.SettingsNavigation };
+});
+const SettingsPage = lazy(async () => {
+  const module = await import("@/components/dashboard/settings");
+  return { default: module.SettingsPage };
+});
+const AgentPage = lazy(async () => {
+  const module = await import("@/pages/agents-page");
+  return { default: module.AgentPage };
+});
+const AgentsPage = lazy(async () => {
+  const module = await import("@/pages/agents-page");
+  return { default: module.AgentsPage };
+});
+const ModelPage = lazy(async () => {
+  const module = await import("@/pages/model-page");
+  return { default: module.ModelPage };
+});
+const ProjectPage = lazy(async () => {
+  const module = await import("@/pages/projects-page");
+  return { default: module.ProjectPage };
+});
+const ProjectsPage = lazy(async () => {
+  const module = await import("@/pages/projects-page");
+  return { default: module.ProjectsPage };
+});
+const SessionPage = lazy(async () => {
+  const module = await import("@/pages/sessions-page");
+  return { default: module.SessionPage };
+});
+const SessionsPage = lazy(async () => {
+  const module = await import("@/pages/sessions-page");
+  return { default: module.SessionsPage };
+});
 
 const SESSION_SORT_STORAGE_KEY = "toktracker-session-sort";
+
+const fetchSummary = async (
+  parameters: URLSearchParams,
+  signal: AbortSignal
+) => {
+  const response = await apiFetch(`/api/v1/summary?${parameters}`, { signal });
+  if (!response.ok) {
+    throw new Error("Summary request failed");
+  }
+  return dashboardSummarySchema.parse(await response.json());
+};
 
 const App = () => {
   const [data, setData] = useState(EMPTY_SUMMARY);
@@ -40,8 +92,10 @@ const App = () => {
       : "lastSeen"
   );
   const [overviewData, setOverviewData] = useState(EMPTY_SUMMARY);
-  const [loading, setLoading] = useState(true);
+  const [overviewLoading, setOverviewLoading] = useState(true);
+  const [globalLoading, setGlobalLoading] = useState(true);
   const [searchOpen, setSearchOpen] = useState(false);
+  const [searchLoaded, setSearchLoaded] = useState(false);
   const [authRequired, setAuthRequired] = useState(false);
   const [searchParams, setSearchParams] = useSearchParams();
   const location = useLocation();
@@ -94,61 +148,72 @@ const App = () => {
     }
   }, [location.pathname, range, requestedRange, updateSearchParam]);
 
+  // The overview (current range) and the all-time summary load
+  // independently: the overview renders as soon as its smaller summary
+  // arrives, and changing the range does not refetch all-time data.
   useEffect(() => {
     const controller = new AbortController();
-    const loadSummary = async (): Promise<void> => {
+    const loadOverview = async (): Promise<void> => {
+      const parameters = new URLSearchParams({ range, sessionSort });
+      if (deviceParam) {
+        parameters.set("devices", deviceParam);
+      }
       try {
-        const overviewRequest = new URLSearchParams({ range });
-        const globalRequest = new URLSearchParams({
-          includeAllDevices: "true",
-          range: "all",
-          sessionSort,
-        });
-        overviewRequest.set("sessionSort", sessionSort);
-        if (deviceParam) {
-          overviewRequest.set("devices", deviceParam);
-          globalRequest.set("devices", deviceParam);
-        }
-        const [overviewResponse, globalResponse] = await Promise.all([
-          apiFetch(`/api/v1/summary?${overviewRequest}`, {
-            signal: controller.signal,
-          }),
-          apiFetch(`/api/v1/summary?${globalRequest}`, {
-            signal: controller.signal,
-          }),
-        ]);
-        if (!overviewResponse.ok || !globalResponse.ok) {
-          throw new Error("Summary request failed");
-        }
-        const [overviewSummary, globalSummary] = await Promise.all([
-          overviewResponse
-            .json()
-            .then((body) => dashboardSummarySchema.parse(body)),
-          globalResponse
-            .json()
-            .then((body) => dashboardSummarySchema.parse(body)),
-        ]);
-        setOverviewData(overviewSummary);
-        setData(globalSummary);
+        const summary = await fetchSummary(parameters, controller.signal);
+        setOverviewData(summary);
       } catch {
         if (!controller.signal.aborted) {
-          setData(EMPTY_SUMMARY);
           setOverviewData(EMPTY_SUMMARY);
         }
       } finally {
         if (!controller.signal.aborted) {
-          setLoading(false);
+          setOverviewLoading(false);
         }
       }
     };
-    loadSummary();
+    loadOverview();
     return () => controller.abort();
   }, [deviceParam, range, sessionSort]);
+
+  // The gateway computes summaries one at a time, so on the landing page ask
+  // for the heavier all-time summary only once the overview has painted.
+  const globalSummaryReady = location.pathname !== "/" || !overviewLoading;
+  useEffect(() => {
+    if (!globalSummaryReady) {
+      return;
+    }
+    const controller = new AbortController();
+    const loadGlobal = async (): Promise<void> => {
+      const parameters = new URLSearchParams({
+        includeAllDevices: "true",
+        range: "all",
+        sessionSort,
+      });
+      if (deviceParam) {
+        parameters.set("devices", deviceParam);
+      }
+      try {
+        const summary = await fetchSummary(parameters, controller.signal);
+        setData(summary);
+      } catch {
+        if (!controller.signal.aborted) {
+          setData(EMPTY_SUMMARY);
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setGlobalLoading(false);
+        }
+      }
+    };
+    loadGlobal();
+    return () => controller.abort();
+  }, [deviceParam, globalSummaryReady, sessionSort]);
 
   useEffect(() => {
     const openSearch = (event: KeyboardEvent): void => {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
+        setSearchLoaded(true);
         setSearchOpen((current) => !current);
       }
     };
@@ -183,6 +248,9 @@ const App = () => {
       pageTitle === "TokTracker" ? pageTitle : `${pageTitle} | TokTracker`;
   }, [pageTitle]);
 
+  const isOverviewRoute = location.pathname === "/";
+  const loading =
+    isOverviewRoute && !settingsOpen ? overviewLoading : globalLoading;
   let mainContent: React.ReactNode;
   if (loading) {
     mainContent = <EmptyState>Loading usage…</EmptyState>;
@@ -244,13 +312,17 @@ const App = () => {
   return (
     <div className="min-h-screen bg-background text-foreground">
       {authRequired && <PairingDialog />}
-      <CommandPalette
-        data={data}
-        deviceParam={deviceParam}
-        sessionSort={sessionSort}
-        open={searchOpen}
-        onOpenChange={setSearchOpen}
-      />
+      {searchLoaded && (
+        <Suspense fallback={null}>
+          <CommandPalette
+            data={data}
+            deviceParam={deviceParam}
+            sessionSort={sessionSort}
+            open={searchOpen}
+            onOpenChange={setSearchOpen}
+          />
+        </Suspense>
+      )}
       <aside className="fixed inset-y-0 left-0 z-20 hidden w-56 flex-col border-r bg-card px-4 py-5 lg:flex">
         <Link to="/" className="flex items-center gap-3">
           <div className="grid size-8 place-items-center rounded-md bg-primary text-primary-foreground">
@@ -264,10 +336,12 @@ const App = () => {
           </div>
         </Link>
         {settingsOpen ? (
-          <SettingsNavigation
-            section={settingsSection ?? "general"}
-            setSection={(section) => navigate(`/settings/${section}`)}
-          />
+          <Suspense fallback={null}>
+            <SettingsNavigation
+              section={settingsSection ?? "general"}
+              setSection={(section) => navigate(`/settings/${section}`)}
+            />
+          </Suspense>
         ) : (
           <Navigation data={data} />
         )}
@@ -291,7 +365,10 @@ const App = () => {
           </div>
           <button
             type="button"
-            onClick={() => setSearchOpen(true)}
+            onClick={() => {
+              setSearchLoaded(true);
+              setSearchOpen(true);
+            }}
             className="mx-auto flex h-9 w-full max-w-xl items-center gap-2 rounded-md border bg-muted px-3 text-sm text-muted-foreground transition hover:bg-background hover:text-foreground"
           >
             <Search size={15} />
@@ -314,7 +391,11 @@ const App = () => {
           )}
         </header>
         <Navigation data={data} mobile />
-        <div className="mx-auto max-w-[1600px] p-4 md:p-6">{mainContent}</div>
+        <div className="mx-auto max-w-[1600px] p-4 md:p-6">
+          <Suspense fallback={<EmptyState>Loading…</EmptyState>}>
+            {mainContent}
+          </Suspense>
+        </div>
       </main>
     </div>
   );

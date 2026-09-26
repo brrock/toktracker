@@ -1,4 +1,6 @@
 import { Database } from "bun:sqlite";
+import { existsSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
 import type {
   DashboardSummary,
@@ -32,6 +34,45 @@ const INGESTION_REQUEST_TTL_MS = 24 * 60 * 60 * 1000;
 const CURSOR_COMMAND_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 const DASHBOARD_LAST_SEEN_RESOLUTION_MS = 60 * 1000;
 const MILLISECOND_TIMESTAMP_THRESHOLD = 1_000_000_000_000;
+// Summaries are recomputed whenever usage changes; the TTL only bounds how
+// stale rolling windows (such as "last 7 days") can get between ingests.
+const SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
+const MAX_CACHED_SUMMARIES = 32;
+// After an ingest, recompute summaries a dashboard asked for recently so the
+// next page load is served from cache instead of rescanning all usage.
+const SUMMARY_WARMUP_DELAY_MS = 2000;
+const SUMMARY_WARMUP_WINDOW_MS = 15 * 60 * 1000;
+
+export type SummaryArguments = [
+  deviceIds: string[],
+  range: TimeRange,
+  includeAllDevices: boolean,
+  sessionSort: SessionSort,
+];
+
+export type SummaryWorkerTask =
+  | { args: SummaryArguments; kind: "summary" }
+  | { kind: "sessions" };
+export interface SummaryWorkerRequest {
+  databasePath: string;
+  id: number;
+  task: SummaryWorkerTask;
+}
+export interface SummaryWorkerResponse {
+  error?: string;
+  id: number;
+  result?: DashboardSummary | SessionSummary[];
+}
+
+// Summaries scan every usage row in range and take seconds on large
+// histories. Running them on a worker keeps ingestion, static assets and
+// other API requests responsive while a dashboard summary is computed.
+const summaryWorkerUrl = (): URL => {
+  const bundled = new URL("summary-worker.js", import.meta.url);
+  return existsSync(fileURLToPath(bundled))
+    ? bundled
+    : new URL("summary-worker.ts", import.meta.url);
+};
 const SYNARA_HOST_CONTEXT =
   /<synara_host_context>[\s\S]*?<\/synara_host_context>/giu;
 
@@ -419,7 +460,7 @@ const fuzzyMatch = (candidate: string, query: string): boolean => {
 };
 
 const sessionQueryTerms = (query: string): string[] =>
-  query.trim().toLocaleLowerCase().split(/\s+/u).filter(Boolean);
+  query.trim().toLowerCase().split(/\s+/u).filter(Boolean);
 
 const matchesSessionQuery = (
   session: SessionSummary,
@@ -439,7 +480,7 @@ const matchesSessionQuery = (
     session.project,
   ]
     .join(" ")
-    .toLocaleLowerCase();
+    .toLowerCase();
   return terms.every(
     (term) => searchable.includes(term) || fuzzyMatch(searchable, term)
   );
@@ -536,7 +577,7 @@ const summarizeGroups = (
 ): Record<string, UsageDetail> =>
   Object.fromEntries(
     [...groups].map(([name, groupMessages]) => {
-      const summary = summarize(groupMessages);
+      const summary = summarize(groupMessages, { hourly: false });
       return [
         name,
         {
@@ -551,8 +592,46 @@ const summarizeGroups = (
 
 export class Store {
   private db: Database;
-  constructor(path = process.env.TOKTRACKER_DB ?? "toktracker.db") {
-    this.db = new Database(path, { create: true, strict: true });
+  private dataVersion = 0;
+  private summaryCache = new Map<
+    string,
+    { createdAt: number; summary: DashboardSummary; version: number }
+  >();
+  private summaryRequests = new Map<
+    string,
+    { args: SummaryArguments; requestedAt: number }
+  >();
+  private summaryWarmup: ReturnType<typeof setTimeout> | undefined;
+  private summaryInFlight = new Map<string, Promise<DashboardSummary>>();
+  private sessionsRequestedAt = Number.NEGATIVE_INFINITY;
+  private sessionSummaryCache:
+    | { promise: Promise<SessionSummary[]>; version: number }
+    | undefined;
+  private readonly path: string;
+  private worker: Worker | undefined;
+  private workerRequestId = 0;
+  private workerRequests = new Map<
+    number,
+    {
+      reject: (error: Error) => void;
+      resolve: (result: SummaryWorkerResponse["result"]) => void;
+    }
+  >();
+
+  /**
+   * @param initialize Create and migrate the schema. Summary workers open an
+   * existing database for reading only and skip this.
+   */
+  constructor(
+    path = process.env.TOKTRACKER_DB ?? "toktracker.db",
+    initialize = true
+  ) {
+    this.path = path;
+    this.db = new Database(path, { create: initialize, strict: true });
+    if (!initialize) {
+      this.db.exec("PRAGMA query_only=ON; PRAGMA busy_timeout=5000;");
+      return;
+    }
     this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;");
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS devices (id TEXT PRIMARY KEY, name TEXT NOT NULL, platform TEXT NOT NULL, last_seen INTEGER NOT NULL, banned_at INTEGER);
@@ -660,6 +739,9 @@ export class Store {
   }
 
   close(): void {
+    clearTimeout(this.summaryWarmup);
+    this.summaryWarmup = undefined;
+    this.stopWorker(new Error("Store closed"));
     this.db.close();
   }
 
@@ -786,11 +868,14 @@ export class Store {
   }
 
   banDevice(deviceId: string): boolean {
-    return (
+    const banned =
       this.db
         .query("UPDATE devices SET banned_at=? WHERE id=?")
-        .run(Date.now(), deviceId).changes > 0
-    );
+        .run(Date.now(), deviceId).changes > 0;
+    if (banned) {
+      this.dataVersion += 1;
+    }
+    return banned;
   }
 
   clientAutoUpdateSettings(): ClientAutoUpdateSettings {
@@ -1203,6 +1288,8 @@ export class Store {
     if (accepted === "replay") {
       return { accepted: 0, receivedAt: now, replayed: true };
     }
+    this.dataVersion += 1;
+    this.scheduleSummaryWarmup();
     return { accepted: payload.sessions.length, receivedAt: now };
   }
 
@@ -1214,6 +1301,82 @@ export class Store {
     offset = 0,
     sessionSort: SessionSort = "lastSeen"
   ): SessionSummary[] {
+    return Store.filterSessions(
+      this.sessionSummaries(deviceIds),
+      query,
+      agentNames,
+      limit,
+      offset,
+      sessionSort
+    );
+  }
+
+  /**
+   * Session search for the API. Per-session summaries are computed once per
+   * data change (on the worker) and each search only filters and sorts them,
+   * so typing in the search box does not rescan all usage.
+   */
+  async sessionsAsync(
+    query: string,
+    deviceIds: string[] = [],
+    agentNames: string[] = [],
+    limit = 20,
+    offset = 0,
+    sessionSort: SessionSort = "lastSeen"
+  ): Promise<SessionSummary[]> {
+    this.sessionsRequestedAt = Date.now();
+    const version = this.dataVersion;
+    if (this.sessionSummaryCache?.version !== version) {
+      const promise = this.loadSessionSummaries();
+      this.sessionSummaryCache = { promise, version };
+    }
+    const all = await this.sessionSummaryCache.promise;
+    const devices = new Set(deviceIds);
+    return Store.filterSessions(
+      devices.size > 0
+        ? all.filter((session) => devices.has(session.deviceId))
+        : all,
+      query,
+      agentNames,
+      limit,
+      offset,
+      sessionSort
+    );
+  }
+
+  private async loadSessionSummaries(): Promise<SessionSummary[]> {
+    try {
+      return await this.runInWorker({ kind: "sessions" }, () =>
+        this.sessionSummaries()
+      );
+    } catch (error) {
+      // Do not keep serving a failed computation.
+      this.sessionSummaryCache = undefined;
+      throw error;
+    }
+  }
+
+  private static filterSessions(
+    sessions: SessionSummary[],
+    query: string,
+    agentNames: string[],
+    limit: number,
+    offset: number,
+    sessionSort: SessionSort
+  ): SessionSummary[] {
+    const terms = sessionQueryTerms(query);
+    const agents = new Set(agentNames);
+    return sessions
+      .filter(
+        (session) =>
+          (agents.size === 0 || agents.has(session.client)) &&
+          matchesSessionQuery(session, terms)
+      )
+      .toSorted((a, b) => b[sessionSort] - a[sessionSort])
+      .slice(offset, offset + limit);
+  }
+
+  sessionSummaries(deviceIds: string[] = []): SessionSummary[] {
     const deviceWhere = deviceIds.length
       ? `device_id IN (${deviceIds.map(() => "?").join(",")})`
       : "";
@@ -1228,19 +1391,9 @@ export class Store {
     // Load usage once for every session instead of rescanning the whole
     // usage table per session (which was quadratic in stored sessions).
     const usage = this.usageForSessions(rows, deviceIds);
-    const terms = sessionQueryTerms(query);
-    const agents = new Set(agentNames);
-    return rows
-      .map((row) =>
-        Store.summarizeSession(row, usage.get(sessionKey(row)) ?? [])
-      )
-      .filter(
-        (session) =>
-          (agents.size === 0 || agents.has(session.client)) &&
-          matchesSessionQuery(session, terms)
-      )
-      .toSorted((a, b) => b[sessionSort] - a[sessionSort])
-      .slice(offset, offset + limit);
+    return rows.map((row) =>
+      Store.summarizeSession(row, usage.get(sessionKey(row)) ?? [])
+    );
   }
 
   session(id: string, deviceIds: string[] = []): SessionSummary | undefined {
@@ -1269,11 +1422,266 @@ export class Store {
     return Store.summarizeSession(row, usage, true);
   }
 
+  /**
+   * Dashboard summaries scan every usage row in range, and the dashboard asks
+   * for two on every page load. Reuse results until usage changes.
+   */
   summary(
     deviceIds: string[] = [],
     range: TimeRange = "month",
     includeAllDevices = false,
     sessionSort: SessionSort = "lastSeen"
+  ): DashboardSummary {
+    const args: SummaryArguments = [
+      [...deviceIds].toSorted(),
+      range,
+      includeAllDevices,
+      sessionSort,
+    ];
+    const now = Date.now();
+    this.recordSummaryRequest(args, now);
+    return this.cachedSummary(args, now);
+  }
+
+  /** Like summary(), but computed off the request thread. */
+  summaryAsync(
+    deviceIds: string[] = [],
+    range: TimeRange = "month",
+    includeAllDevices = false,
+    sessionSort: SessionSort = "lastSeen"
+  ): Promise<DashboardSummary> {
+    const args: SummaryArguments = [
+      [...deviceIds].toSorted(),
+      range,
+      includeAllDevices,
+      sessionSort,
+    ];
+    const now = Date.now();
+    this.recordSummaryRequest(args, now);
+    return this.cachedSummaryAsync(args, now);
+  }
+
+  private recordSummaryRequest(args: SummaryArguments, now: number): void {
+    const argsKey = JSON.stringify(args);
+    if (
+      !this.summaryRequests.has(argsKey) &&
+      this.summaryRequests.size >= MAX_CACHED_SUMMARIES
+    ) {
+      this.summaryRequests.clear();
+    }
+    this.summaryRequests.set(argsKey, { args, requestedAt: now });
+  }
+
+  private static summaryCacheKey(args: SummaryArguments, now: number): string {
+    // Calendar ranges start at local midnight / month / year boundaries.
+    return `${JSON.stringify(args)}\u0000${new Date(now).toDateString()}`;
+  }
+
+  private freshCachedSummary(
+    key: string,
+    now: number
+  ): DashboardSummary | undefined {
+    const cached = this.summaryCache.get(key);
+    return cached &&
+      cached.version === this.dataVersion &&
+      now - cached.createdAt < SUMMARY_CACHE_TTL_MS
+      ? cached.summary
+      : undefined;
+  }
+
+  private storeCachedSummary(
+    key: string,
+    summary: DashboardSummary,
+    createdAt: number,
+    version: number
+  ): void {
+    if (
+      !this.summaryCache.has(key) &&
+      this.summaryCache.size >= MAX_CACHED_SUMMARIES
+    ) {
+      this.summaryCache.clear();
+    }
+    this.summaryCache.set(key, { createdAt, summary, version });
+  }
+
+  private cachedSummaryAsync(
+    args: SummaryArguments,
+    now: number
+  ): Promise<DashboardSummary> {
+    const key = Store.summaryCacheKey(args, now);
+    const cached = this.freshCachedSummary(key, now);
+    if (cached) {
+      return Promise.resolve(cached);
+    }
+    const version = this.dataVersion;
+    const inFlightKey = `${key}\u0000${version}`;
+    const inFlight = this.summaryInFlight.get(inFlightKey);
+    if (inFlight) {
+      return inFlight;
+    }
+    const promise = (async () => {
+      try {
+        const summary = await this.runInWorker({ args, kind: "summary" }, () =>
+          this.computeSummary(...args)
+        );
+        this.storeCachedSummary(key, summary, now, version);
+        return summary;
+      } finally {
+        this.summaryInFlight.delete(inFlightKey);
+      }
+    })();
+    this.summaryInFlight.set(inFlightKey, promise);
+    return promise;
+  }
+
+  private runInWorker(
+    task: { args: SummaryArguments; kind: "summary" },
+    fallback: () => DashboardSummary
+  ): Promise<DashboardSummary>;
+  private runInWorker(
+    task: { kind: "sessions" },
+    fallback: () => SessionSummary[]
+  ): Promise<SessionSummary[]>;
+  private async runInWorker(
+    task: SummaryWorkerTask,
+    fallback: () => DashboardSummary | SessionSummary[]
+  ): Promise<DashboardSummary | SessionSummary[]> {
+    const worker = this.summaryWorker();
+    if (!worker) {
+      return fallback();
+    }
+    this.workerRequestId += 1;
+    const id = this.workerRequestId;
+    // Worker replies arrive as message events, so bridge them to a promise.
+    // eslint-disable-next-line promise/avoid-new
+    const result = await new Promise<SummaryWorkerResponse["result"]>(
+      (resolve, reject) => {
+        this.workerRequests.set(id, { reject, resolve });
+        const request: SummaryWorkerRequest = {
+          databasePath: this.path,
+          id,
+          task,
+        };
+        // Worker postMessage has no target origin.
+        // eslint-disable-next-line unicorn/require-post-message-target-origin
+        worker.postMessage(request);
+      }
+    );
+    if (!result) {
+      throw new Error("Summary worker returned no result");
+    }
+    return result;
+  }
+
+  private summaryWorker(): Worker | undefined {
+    if (
+      this.path === ":memory:" ||
+      process.env.TOKTRACKER_SUMMARY_WORKER === "0"
+    ) {
+      return undefined;
+    }
+    if (this.worker) {
+      return this.worker;
+    }
+    const worker = new Worker(summaryWorkerUrl());
+    worker.addEventListener(
+      "message",
+      (event: MessageEvent<SummaryWorkerResponse>) => {
+        const pending = this.workerRequests.get(event.data.id);
+        if (!pending) {
+          return;
+        }
+        this.workerRequests.delete(event.data.id);
+        if (event.data.error === undefined) {
+          pending.resolve(event.data.result);
+        } else {
+          pending.reject(new Error(event.data.error));
+        }
+      }
+    );
+    worker.addEventListener("error", (event) => {
+      this.stopWorker(new Error(`Summary worker failed: ${event.message}`));
+    });
+    this.worker = worker;
+    return worker;
+  }
+
+  private stopWorker(error: Error): void {
+    this.worker?.terminate();
+    this.worker = undefined;
+    for (const pending of this.workerRequests.values()) {
+      pending.reject(error);
+    }
+    this.workerRequests.clear();
+  }
+
+  private cachedSummary(args: SummaryArguments, now: number): DashboardSummary {
+    const key = Store.summaryCacheKey(args, now);
+    const cached = this.freshCachedSummary(key, now);
+    if (cached) {
+      return cached;
+    }
+    const summary = this.computeSummary(...args);
+    this.storeCachedSummary(key, summary, now, this.dataVersion);
+    return summary;
+  }
+
+  private async warmSummary(
+    args: SummaryArguments,
+    now: number
+  ): Promise<void> {
+    try {
+      await this.cachedSummaryAsync(args, now);
+    } catch (error) {
+      console.warn("TokTracker: summary warmup failed", error);
+    }
+  }
+
+  private async warmSessions(): Promise<void> {
+    const version = this.dataVersion;
+    if (this.sessionSummaryCache?.version === version) {
+      return;
+    }
+    const promise = this.loadSessionSummaries();
+    this.sessionSummaryCache = { promise, version };
+    try {
+      await promise;
+    } catch (error) {
+      console.warn("TokTracker: session warmup failed", error);
+    }
+  }
+
+  private scheduleSummaryWarmup(): void {
+    const sessionsRecentlyRequested =
+      Date.now() - this.sessionsRequestedAt <= SUMMARY_WARMUP_WINDOW_MS;
+    if (
+      this.summaryWarmup ||
+      (this.summaryRequests.size === 0 && !sessionsRecentlyRequested)
+    ) {
+      return;
+    }
+    this.summaryWarmup = setTimeout(() => {
+      this.summaryWarmup = undefined;
+      const now = Date.now();
+      if (now - this.sessionsRequestedAt <= SUMMARY_WARMUP_WINDOW_MS) {
+        this.warmSessions();
+      }
+      for (const [key, request] of this.summaryRequests) {
+        if (now - request.requestedAt > SUMMARY_WARMUP_WINDOW_MS) {
+          this.summaryRequests.delete(key);
+          continue;
+        }
+        this.warmSummary(request.args, now);
+      }
+    }, SUMMARY_WARMUP_DELAY_MS);
+    this.summaryWarmup.unref?.();
+  }
+
+  computeSummary(
+    deviceIds: string[],
+    range: TimeRange,
+    includeAllDevices: boolean,
+    sessionSort: SessionSort
   ): DashboardSummary {
     const where = deviceIds.length
       ? ` WHERE device_id IN (${deviceIds.map(() => "?").join(",")})`
@@ -1289,7 +1697,7 @@ export class Store {
     const messages: UsageMessage[] = [
       ...this.usageForSessions(rows, deviceIds, rangeStart).values(),
     ].flat();
-    const core = summarize(messages);
+    const core = summarize(messages, { hourly: range === "day" });
     if (range === "day") {
       core.hourly = Store.hourlyBuckets(core.hourly);
     }
