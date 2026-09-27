@@ -146,7 +146,7 @@ const WelcomeStep = () => {
     <div className="space-y-8">
       <div>
         <BrandMark className="size-14 animate-pulse-ring rounded-2xl" />
-        <h1 className="text-gradient mt-6 text-4xl font-semibold leading-tight sm:text-5xl">
+        <h1 className="gradient-heading mt-6 text-4xl font-semibold leading-tight sm:text-5xl">
           Know exactly what your agents cost.
         </h1>
         <p className="mt-3 max-w-lg text-base text-muted-foreground">
@@ -218,7 +218,7 @@ const StyleStep = () => (
     </div>
     <div className="hidden xl:block">
       <div className="sticky top-0">
-        <p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+        <p className="mb-3 text-xs font-medium uppercase tracking-caps text-muted-foreground">
           Live preview
         </p>
         <AppearancePreview />
@@ -304,7 +304,7 @@ const ConnectStep = ({ devices }: { devices: Devices }) => {
                       key={device.id}
                       className="flex items-center gap-3 text-sm"
                     >
-                      <span className="size-2 rounded-full bg-success shadow-[0_0_0_4px_color-mix(in_oklch,var(--success)_20%,transparent)]" />
+                      <span className="size-2 rounded-full bg-success shadow-halo-success" />
                       <span className="min-w-0 flex-1 truncate font-medium">
                         {device.name}
                       </span>
@@ -369,7 +369,7 @@ const ReadyStep = () => {
               {shortcut.keys.map((key) => (
                 <kbd
                   key={key}
-                  className="grid h-6 min-w-6 place-items-center rounded-md border bg-muted px-1.5 font-mono text-[11px]"
+                  className="grid h-6 min-w-6 place-items-center rounded-md border bg-muted px-1.5 font-mono text-2xs"
                 >
                   {key}
                 </kbd>
@@ -443,7 +443,7 @@ export const Onboarding = ({
                 >
                   <span
                     className={cn(
-                      "grid size-6 place-items-center rounded-full border text-[11px] transition",
+                      "grid size-6 place-items-center rounded-full border text-2xs transition",
                       current &&
                         "border-primary bg-primary text-primary-foreground",
                       done && "border-success/40 bg-success/15 text-success"
@@ -512,7 +512,7 @@ export const Onboarding = ({
             <button
               type="button"
               onClick={next}
-              className="brand-gradient inline-flex h-10 items-center gap-2 rounded-lg px-5 text-sm font-medium text-primary-foreground shadow-[0_8px_24px_-10px_var(--primary)] transition hover:brightness-110"
+              className="brand-gradient inline-flex h-10 items-center gap-2 rounded-lg px-5 text-sm font-medium text-primary-foreground shadow-glow-lg transition hover:brightness-110"
             >
               {nextLabel}
               <ArrowRight className="size-4" />

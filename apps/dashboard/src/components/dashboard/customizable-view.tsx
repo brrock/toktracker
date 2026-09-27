@@ -534,7 +534,7 @@ const AddWidgetMenu = ({
               </Popover.Close>
             )}
             {available.length > 0 && (
-              <p className="px-2.5 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground">
+              <p className="px-2.5 pt-2 pb-1 text-3xs font-semibold uppercase tracking-caps text-muted-foreground">
                 Restore
               </p>
             )}
@@ -609,7 +609,7 @@ const EditableWidget = ({
         onDropOn(event.dataTransfer.getData("text/plain"));
       }}
       className={cn(
-        "relative rounded-[calc(var(--radius)*1.6)] outline-2 outline-offset-4 outline-dashed transition",
+        "relative rounded-2xl outline-2 outline-offset-4 outline-dashed transition",
         SIZE_CLASSES[widget.size],
         over ? "outline-primary" : "outline-primary/30",
         dragging && "opacity-40"
@@ -622,7 +622,7 @@ const EditableWidget = ({
         >
           <GripVertical className="size-3.5" />
         </span>
-        <span className="max-w-40 truncate px-1 text-[11px] font-medium">
+        <span className="max-w-40 truncate px-1 text-2xs font-medium">
           {title}
         </span>
         <button

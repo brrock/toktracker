@@ -32,7 +32,7 @@ const secondaryLinkClass = ({ isActive }: { isActive: boolean }): string =>
   );
 
 const SectionLabel = ({ children }: { children: React.ReactNode }) => (
-  <p className="mb-1.5 px-3 text-[10px] font-semibold uppercase tracking-[0.14em] text-muted-foreground/80">
+  <p className="mb-1.5 px-3 text-3xs font-semibold uppercase tracking-caps text-muted-foreground/80">
     {children}
   </p>
 );
@@ -87,13 +87,13 @@ export const Navigation = ({
                 </span>
                 <span className="relative h-1 w-8 overflow-hidden rounded-full bg-muted">
                   <span
-                    className="absolute inset-y-0 left-0 rounded-full bg-primary/70"
+                    className="absolute inset-y-0 left-0 w-(--bar-size) rounded-full bg-primary/70"
                     style={{
-                      width: `${agentTotal ? (agent.tokens / agentTotal) * 100 : 0}%`,
+                      "--bar-size": `${agentTotal ? (agent.tokens / agentTotal) * 100 : 0}%`,
                     }}
                   />
                 </span>
-                <span className="w-9 text-right text-[10px] tabular-nums">
+                <span className="w-9 text-right text-3xs tabular-nums">
                   {compact(agent.tokens)}
                 </span>
               </NavLink>

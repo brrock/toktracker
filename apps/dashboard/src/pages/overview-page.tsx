@@ -108,10 +108,10 @@ export const OverviewPage = ({
         }
         heading={
           <>
-            <p className="text-xs font-medium uppercase tracking-[0.14em] text-primary">
+            <p className="text-xs font-medium uppercase tracking-caps text-primary">
               {today}
             </p>
-            <h2 className="text-gradient mt-1.5 text-3xl font-semibold">
+            <h2 className="gradient-heading mt-1.5 text-3xl font-semibold">
               {greeting(new Date(), appearance.displayName)}
             </h2>
             <p className="mt-1.5 flex items-center gap-1.5 text-sm text-muted-foreground">

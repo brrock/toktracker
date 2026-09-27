@@ -255,7 +255,7 @@ export const SettingsNavigation = ({
     aria-label="Settings"
     className="mt-6 flex min-h-0 flex-1 flex-col text-sm"
   >
-    <p className="mb-2 px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+    <p className="mb-2 px-3 text-2xs font-medium uppercase tracking-wider text-muted-foreground">
       Settings
     </p>
     {(
@@ -1366,7 +1366,7 @@ export const SettingsPage = ({
                 className="flex items-center gap-3 border-b p-4 last:border-0"
               >
                 <span
-                  className={`size-2 rounded-full ${isOnline(device.lastSeen) ? "bg-emerald-500" : "bg-muted-foreground"}`}
+                  className={`size-2 rounded-full ${isOnline(device.lastSeen) ? "bg-success" : "bg-muted-foreground"}`}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{device.name}</p>

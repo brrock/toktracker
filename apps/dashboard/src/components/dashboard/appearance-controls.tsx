@@ -13,6 +13,7 @@ import {
   RADIUS_OPTIONS,
   SURFACE_OPTIONS,
 } from "@/lib/appearance";
+import type { SurfaceId } from "@/lib/appearance";
 import { cn } from "@/lib/utils";
 
 import { ChoiceGroup, ChoiceOption, SegmentedControl } from "./primitives";
@@ -22,9 +23,6 @@ const MODES = [
   { icon: Moon, label: "Dark", value: "dark" },
   { icon: Monitor, label: "System", value: "system" },
 ] as const;
-
-const swatch = (hue: number, chroma: number): string =>
-  `linear-gradient(135deg, oklch(0.8 ${chroma} ${hue + 25}), oklch(0.62 ${chroma} ${hue}) 55%, oklch(0.48 ${chroma} ${hue - 25}))`;
 
 export const ModePicker = ({ compact = false }: { compact?: boolean }) => {
   const { appearance, setMode } = useAppearance();
@@ -81,10 +79,13 @@ export const AccentPicker = ({
               title={preset.label}
               onSelect={() => updateAppearance({ accent: preset.id })}
               className={cn(
-                "grid size-8 place-items-center rounded-full ring-offset-2 ring-offset-background transition hover:scale-110",
+                "swatch grid size-8 place-items-center rounded-full ring-offset-2 ring-offset-background transition hover:scale-110",
                 selected && "ring-2 ring-foreground/70"
               )}
-              style={{ background: swatch(preset.hue, preset.chroma) }}
+              style={{
+                "--swatch-c": preset.chroma,
+                "--swatch-h": preset.hue,
+              }}
             >
               <span className="sr-only">{preset.label}</span>
               {selected && <Check className="size-4 text-white drop-shadow" />}
@@ -98,13 +99,9 @@ export const AccentPicker = ({
             title="Custom colour"
             onSelect={() => updateAppearance({ accent: "custom" })}
             className={cn(
-              "grid size-8 place-items-center rounded-full ring-offset-2 ring-offset-background transition hover:scale-110",
+              "hue-wheel grid size-8 place-items-center rounded-full ring-offset-2 ring-offset-background transition hover:scale-110",
               custom && "ring-2 ring-foreground/70"
             )}
-            style={{
-              background:
-                "conic-gradient(oklch(0.7 0.17 0), oklch(0.7 0.17 60), oklch(0.7 0.17 120), oklch(0.7 0.17 180), oklch(0.7 0.17 240), oklch(0.7 0.17 300), oklch(0.7 0.17 360))",
-            }}
           >
             <span className="sr-only">Custom colour</span>
             <Pipette className="size-3.5 text-white drop-shadow" />
@@ -126,11 +123,7 @@ export const AccentPicker = ({
             onChange={(event) =>
               updateAppearance({ customHue: Number(event.target.value) })
             }
-            className="h-2 w-full cursor-pointer appearance-none rounded-full [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow"
-            style={{
-              background:
-                "linear-gradient(90deg, oklch(0.7 0.17 0), oklch(0.7 0.17 60), oklch(0.7 0.17 120), oklch(0.7 0.17 180), oklch(0.7 0.17 240), oklch(0.7 0.17 300), oklch(0.7 0.17 359))",
-            }}
+            className="hue-track h-2 w-full cursor-pointer appearance-none rounded-full [&::-webkit-slider-thumb]:size-4 [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:border-2 [&::-webkit-slider-thumb]:border-white [&::-webkit-slider-thumb]:bg-primary [&::-webkit-slider-thumb]:shadow"
           />
         </div>
       )}
@@ -138,19 +131,32 @@ export const AccentPicker = ({
   );
 };
 
+// Chroma and lightness of each surface's light and dark preview halves.
+const SURFACE_PREVIEWS = {
+  neutral: { darkChroma: 0, darkLightness: 0.2, hue: 0, lightChroma: 0 },
+  oled: { darkChroma: 0, darkLightness: 0, hue: 0, lightChroma: 0 },
+  slate: { darkChroma: 0.025, darkLightness: 0.2, hue: 255, lightChroma: 0.01 },
+  stone: { darkChroma: 0.013, darkLightness: 0.2, hue: 60, lightChroma: 0.008 },
+  tinted: {
+    darkChroma: 0.035,
+    darkLightness: 0.21,
+    hue: 0,
+    lightChroma: 0.025,
+  },
+} as const satisfies Record<
+  SurfaceId,
+  {
+    darkChroma: number;
+    darkLightness: number;
+    hue: number;
+    lightChroma: number;
+  }
+>;
+
 export const SurfacePicker = () => {
   const { appearance, updateAppearance } = useAppearance();
   const accent = accentColor(appearance);
-  const previews = {
-    neutral: ["oklch(0.98 0 0)", "oklch(0.2 0 0)"],
-    oled: ["oklch(0.98 0 0)", "oklch(0 0 0)"],
-    slate: ["oklch(0.98 0.01 255)", "oklch(0.2 0.025 255)"],
-    stone: ["oklch(0.98 0.008 60)", "oklch(0.2 0.013 60)"],
-    tinted: [
-      `oklch(0.97 0.025 ${accent.hue})`,
-      `oklch(0.21 0.035 ${accent.hue})`,
-    ],
-  } as const;
+
   const name = useId();
   return (
     <ChoiceGroup
@@ -159,7 +165,6 @@ export const SurfacePicker = () => {
     >
       {SURFACE_OPTIONS.map((option) => {
         const selected = appearance.surface === option.id;
-        const [light, dark] = previews[option.id];
         return (
           <ChoiceOption
             key={option.id}
@@ -174,14 +179,20 @@ export const SurfacePicker = () => {
             )}
           >
             <span
-              className="block h-10"
+              className="surface-preview block h-10"
               style={{
-                background: `linear-gradient(115deg, ${light} 0 50%, ${dark} 50% 100%)`,
+                "--preview-dark-c": SURFACE_PREVIEWS[option.id].darkChroma,
+                "--preview-dark-l": SURFACE_PREVIEWS[option.id].darkLightness,
+                "--preview-h":
+                  option.id === "tinted"
+                    ? accent.hue
+                    : SURFACE_PREVIEWS[option.id].hue,
+                "--preview-light-c": SURFACE_PREVIEWS[option.id].lightChroma,
               }}
             />
             <span className="block bg-card px-2.5 py-2">
               <span className="block text-xs font-medium">{option.label}</span>
-              <span className="block truncate text-[10px] text-muted-foreground">
+              <span className="block truncate text-3xs text-muted-foreground">
                 {option.description}
               </span>
             </span>
@@ -191,16 +202,6 @@ export const SurfacePicker = () => {
     </ChoiceGroup>
   );
 };
-
-const FONT_FAMILIES = {
-  editorial: '"Fraunces Variable", serif',
-  geist: '"Geist Variable", sans-serif',
-  grotesk: '"Space Grotesk Variable", sans-serif',
-  inter: '"Inter Variable", sans-serif',
-  manrope: '"Manrope Variable", sans-serif',
-  plex: '"IBM Plex Sans Variable", sans-serif',
-  terminal: '"JetBrains Mono Variable", monospace',
-} as const;
 
 export const FontPicker = ({ limit }: { limit?: number }) => {
   const { appearance, updateAppearance } = useAppearance();
@@ -227,14 +228,14 @@ export const FontPicker = ({ limit }: { limit?: number }) => {
           >
             <span
               className="block text-xl leading-tight"
-              style={{ fontFamily: FONT_FAMILIES[option.id] }}
+              data-font-preview={option.id}
             >
               Aa
             </span>
             <span className="mt-1 block text-xs font-medium">
               {option.label}
             </span>
-            <span className="block truncate text-[10px] text-muted-foreground">
+            <span className="block truncate text-3xs text-muted-foreground">
               {option.note}
             </span>
           </ChoiceOption>

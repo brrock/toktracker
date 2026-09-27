@@ -38,8 +38,6 @@ export const SERIES_COLORS = [
 const seriesColor = (index: number): string =>
   SERIES_COLORS[index % SERIES_COLORS.length] ?? "var(--chart-1)";
 
-const BAR_FILL =
-  "linear-gradient(to top, color-mix(in oklch, var(--chart-1) 55%, transparent), var(--chart-1))";
 const GRID_LINES = 4;
 const RANKED_ENTRIES = 5;
 const CHART_WIDTH = 100;
@@ -126,10 +124,10 @@ const TimelineSvg = ({
       </svg>
       {active && (
         <span
-          className="pointer-events-none absolute size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-card bg-primary shadow"
+          className="pointer-events-none absolute top-(--point-y) left-(--point-x) size-3 -translate-x-1/2 -translate-y-1/2 rounded-full border-2 border-card bg-primary shadow"
           style={{
-            left: `${(active.x / CHART_WIDTH) * 100}%`,
-            top: `${(active.y / CHART_HEIGHT) * 100}%`,
+            "--point-x": `${(active.x / CHART_WIDTH) * 100}%`,
+            "--point-y": `${(active.y / CHART_HEIGHT) * 100}%`,
           }}
         />
       )}
@@ -219,7 +217,7 @@ export const DailySpendChart = ({
             {Array.from({ length: GRID_LINES + 1 }, (_, line) => (
               <div
                 key={line}
-                className="flex items-center gap-2 text-[10px] tabular-nums text-muted-foreground"
+                className="flex items-center gap-2 text-3xs tabular-nums text-muted-foreground"
               >
                 <span className="w-10 shrink-0 text-right">
                   {formatMetric(
@@ -251,7 +249,7 @@ export const DailySpendChart = ({
             <div
               className={cn(
                 "relative flex h-full items-end",
-                variant === "bar" ? "gap-[3px]" : "gap-0"
+                variant === "bar" ? "gap-0.75" : "gap-0"
               )}
               onMouseLeave={() => setHovered(undefined)}
             >
@@ -273,13 +271,12 @@ export const DailySpendChart = ({
                       {variant === "bar" ? (
                         <span
                           className={cn(
-                            "animate-grow-up w-full rounded-t-[calc(var(--radius)*0.5)] transition-opacity duration-200",
+                            "animate-grow-up stagger bar-fill h-(--bar-size) w-full rounded-t-sm transition-opacity duration-200",
                             isDimmed && "opacity-35"
                           )}
                           style={{
-                            animationDelay: `${index * 12}ms`,
-                            background: BAR_FILL,
-                            height: `${Math.max(2, (point[metric] / maximumValue) * 100)}%`,
+                            "--bar-size": `${Math.max(2, (point[metric] / maximumValue) * 100)}%`,
+                            "--stagger-index": index,
                           }}
                         />
                       ) : (
@@ -291,7 +288,7 @@ export const DailySpendChart = ({
                         />
                       )}
                     </span>
-                    <span className="mt-2 h-4 w-full overflow-visible whitespace-nowrap text-center text-[10px] text-muted-foreground">
+                    <span className="mt-2 h-4 w-full overflow-visible whitespace-nowrap text-center text-3xs text-muted-foreground">
                       {showLabel ? pointLabel(point.date) : ""}
                     </span>
                   </button>
@@ -364,11 +361,12 @@ const BreakdownBars = ({
         </div>
         <div className="h-1.5 rounded-full bg-muted">
           <div
-            className="animate-grow-right h-full rounded-full"
+            className="animate-grow-right stagger h-full w-(--bar-size) rounded-full bg-(--series)"
             style={{
-              animationDelay: `${index * 60}ms`,
-              background: seriesColor(index),
-              width: `${Math.max(3, (entry[metric] / maximum) * 100)}%`,
+              "--bar-size": `${Math.max(3, (entry[metric] / maximum) * 100)}%`,
+              "--series": seriesColor(index),
+              "--stagger-index": index,
+              "--stagger-step": "60ms",
             }}
           />
         </div>
@@ -448,7 +446,7 @@ const BreakdownDonut = ({
             <div className="font-heading text-lg font-semibold tabular-nums">
               {formatMetric(metric, total)}
             </div>
-            <div className="text-[10px] uppercase tracking-wider text-muted-foreground">
+            <div className="text-3xs uppercase tracking-wider text-muted-foreground">
               total
             </div>
           </div>
@@ -458,8 +456,8 @@ const BreakdownDonut = ({
         {entries.map((entry, index) => (
           <li key={entry.name} className="flex items-center gap-2">
             <span
-              className="size-2.5 shrink-0 rounded-full"
-              style={{ background: seriesColor(index) }}
+              className="size-2.5 shrink-0 rounded-full bg-(--series)"
+              style={{ "--series": seriesColor(index) }}
             />
             <BreakdownLabel entry={entry} kind={kind} />
             <span className="text-xs tabular-nums text-muted-foreground">
@@ -493,16 +491,17 @@ const BreakdownColumns = ({
           {formatMetric(metric, entry[metric])}
         </span>
         <div
-          className="animate-grow-up w-full max-w-16 rounded-t-[calc(var(--radius)*0.6)]"
+          className="animate-grow-up stagger h-(--bar-size) w-full max-w-16 rounded-t-sm bg-(--series)"
           style={{
-            animationDelay: `${index * 60}ms`,
-            background: seriesColor(index),
-            height: `${Math.max(3, (entry[metric] / maximum) * 75)}%`,
+            "--bar-size": `${Math.max(3, (entry[metric] / maximum) * 75)}%`,
+            "--series": seriesColor(index),
+            "--stagger-index": index,
+            "--stagger-step": "60ms",
           }}
         />
         <span
           className={cn(
-            "flex w-full min-w-0 items-center justify-center gap-1 text-[11px] text-muted-foreground",
+            "flex w-full min-w-0 items-center justify-center gap-1 text-2xs text-muted-foreground",
             kind === "agent" && "capitalize"
           )}
           title={entry.name}
@@ -570,20 +569,21 @@ export const UsageBreakdownChart = ({
             <span
               key={entry.name}
               title={`${entry.name}: ${formatMetric(metric, entry[metric])}`}
-              className="animate-grow-right h-full first:rounded-l-full"
+              className="animate-grow-right stagger h-full w-(--bar-size) bg-(--series) first:rounded-l-full"
               style={{
-                animationDelay: `${index * 60}ms`,
-                background: seriesColor(index),
-                width: `${(entry[metric] / total) * 100}%`,
+                "--bar-size": `${(entry[metric] / total) * 100}%`,
+                "--series": seriesColor(index),
+                "--stagger-index": index,
+                "--stagger-step": "60ms",
               }}
             />
           ))}
           {otherValue > 0 && (
             <span
-              className="h-full rounded-r-full"
+              className="h-full w-(--bar-size) rounded-r-full bg-(--series)"
               style={{
-                background: seriesColor(SERIES_COLORS.length - 1),
-                width: `${(otherValue / total) * 100}%`,
+                "--bar-size": `${(otherValue / total) * 100}%`,
+                "--series": seriesColor(SERIES_COLORS.length - 1),
               }}
             />
           )}

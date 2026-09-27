@@ -36,7 +36,7 @@ export const SessionTable = ({
     {sessions.length ? (
       <div className="overflow-x-auto">
         <table className="w-full text-left text-sm">
-          <thead className="border-y bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground">
+          <thead className="border-y bg-muted/40 text-2xs uppercase tracking-wider text-muted-foreground">
             <tr>
               <th className="px-5 py-2.5 font-medium">Project / session</th>
               <th className="whitespace-nowrap px-3 py-2.5 font-medium">
@@ -80,7 +80,7 @@ export const SessionTable = ({
                   </span>
                 </td>
                 <td className="hidden whitespace-nowrap px-3 py-3 md:table-cell">
-                  <span className="rounded-md border bg-muted/50 px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground">
+                  <span className="rounded-md border bg-muted/50 px-1.5 py-0.5 font-mono text-2xs text-muted-foreground">
                     {session.model}
                   </span>
                 </td>

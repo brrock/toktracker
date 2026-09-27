@@ -112,7 +112,7 @@ export const AppearanceSettings = () => {
       </div>
       <div className="hidden xl:block">
         <div className="sticky top-24">
-          <p className="mb-3 text-xs font-medium uppercase tracking-[0.14em] text-muted-foreground">
+          <p className="mb-3 text-xs font-medium uppercase tracking-caps text-muted-foreground">
             Live preview
           </p>
           <AppearancePreview />

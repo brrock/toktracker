@@ -57,6 +57,18 @@
   --radius-2xl: calc(var(--radius) * 1.8);
   --radius-3xl: calc(var(--radius) * 2.2);
   --radius-4xl: calc(var(--radius) * 2.6);
+  /* Small print for chart axes, legends and badges. */
+  --text-3xs: 0.625rem;
+  --text-3xs--line-height: 0.875rem;
+  --text-2xs: 0.6875rem;
+  --text-2xs--line-height: 1rem;
+  /* Letter spacing for all-caps eyebrow labels and one-time codes. */
+  --tracking-caps: 0.14em;
+  --tracking-code: 0.2em;
+  --shadow-glow: 0 6px 18px -6px var(--primary);
+  --shadow-glow-lg: 0 8px 24px -10px var(--primary);
+  --shadow-halo-success: 0 0 0 4px
+    color-mix(in oklch, var(--success) 20%, transparent);
 }
 
 /*
@@ -248,55 +260,134 @@
   }
 }
 
-@layer components {
-  /* Cards float slightly off the backdrop. */
-  .surface-card {
-    background: var(--card);
-    color: var(--card-foreground);
-    border: 1px solid var(--border);
-    border-radius: var(--radius-xl);
-    box-shadow: var(--elevation);
-  }
-
-  .brand-gradient {
-    background: linear-gradient(
-      135deg,
-      oklch(0.78 var(--accent-c) calc(var(--accent-h) + 25)),
-      var(--primary) 55%,
-      oklch(0.5 var(--accent-c) calc(var(--accent-h) - 25))
-    );
-  }
-
-  .text-gradient {
-    background: linear-gradient(
-      100deg,
-      var(--foreground) 20%,
-      var(--primary) 110%
-    );
-    background-clip: text;
-    -webkit-background-clip: text;
-    color: transparent;
-  }
-
-  .skeleton {
-    border-radius: var(--radius-lg);
-    background: linear-gradient(
-      90deg,
-      var(--muted) 0%,
-      color-mix(in oklch, var(--muted), var(--foreground) 5%) 50%,
-      var(--muted) 100%
-    );
-    background-size: 200% 100%;
-    animation: shimmer 1.6s ease-in-out infinite;
-  }
+/* Cards float slightly off the backdrop. */
+@utility surface-card {
+  background: var(--card);
+  color: var(--card-foreground);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-xl);
+  box-shadow: var(--elevation);
 }
 
-/* Backdrops sit behind everything in a fixed layer. */
+@utility brand-gradient {
+  background: linear-gradient(
+    135deg,
+    oklch(0.78 var(--accent-c) calc(var(--accent-h) + 25)),
+    var(--primary) 55%,
+    oklch(0.5 var(--accent-c) calc(var(--accent-h) - 25))
+  );
+}
+
+@utility gradient-heading {
+  background: linear-gradient(
+    100deg,
+    var(--foreground) 20%,
+    var(--primary) 110%
+  );
+  background-clip: text;
+  -webkit-background-clip: text;
+  color: transparent;
+}
+
+@utility skeleton {
+  border-radius: var(--radius-lg);
+  background: linear-gradient(
+    90deg,
+    var(--muted) 0%,
+    color-mix(in oklch, var(--muted), var(--foreground) 5%) 50%,
+    var(--muted) 100%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s ease-in-out infinite;
+}
+
+/* Vertical accent fill for timeline bars. */
+@utility bar-fill {
+  background: linear-gradient(
+    to top,
+    color-mix(in oklch, var(--chart-1) 55%, transparent),
+    var(--chart-1)
+  );
+}
+
+/* Entrance animations stagger by --stagger-index (set per element). */
+@utility stagger {
+  animation-delay: calc(var(--stagger-index, 0) * var(--stagger-step, 12ms));
+}
+
+/* Accent swatch driven by --swatch-h / --swatch-c. */
+@utility swatch {
+  background: linear-gradient(
+    135deg,
+    oklch(0.8 var(--swatch-c) calc(var(--swatch-h) + 25)),
+    oklch(0.62 var(--swatch-c) var(--swatch-h)) 55%,
+    oklch(0.48 var(--swatch-c) calc(var(--swatch-h) - 25))
+  );
+}
+
+@utility hue-wheel {
+  background: conic-gradient(
+    oklch(0.7 0.17 0),
+    oklch(0.7 0.17 60),
+    oklch(0.7 0.17 120),
+    oklch(0.7 0.17 180),
+    oklch(0.7 0.17 240),
+    oklch(0.7 0.17 300),
+    oklch(0.7 0.17 360)
+  );
+}
+
+@utility hue-track {
+  background: linear-gradient(
+    90deg,
+    oklch(0.7 0.17 0),
+    oklch(0.7 0.17 60),
+    oklch(0.7 0.17 120),
+    oklch(0.7 0.17 180),
+    oklch(0.7 0.17 240),
+    oklch(0.7 0.17 300),
+    oklch(0.7 0.17 359)
+  );
+}
+
+/* Half light, half dark preview of a surface tint. */
+@utility surface-preview {
+  background: linear-gradient(
+    115deg,
+    oklch(0.98 var(--preview-light-c, 0) var(--preview-h, 0)) 0 50%,
+    oklch(
+        var(--preview-dark-l, 0.2) var(--preview-dark-c, 0) var(--preview-h, 0)
+      )
+      50% 100%
+  );
+}
+
+/* Typeface samples in the font picker. */
+[data-font-preview="geist"] {
+  font-family: "Geist Variable", sans-serif;
+}
+[data-font-preview="inter"] {
+  font-family: "Inter Variable", sans-serif;
+}
+[data-font-preview="manrope"] {
+  font-family: "Manrope Variable", sans-serif;
+}
+[data-font-preview="grotesk"] {
+  font-family: "Space Grotesk Variable", sans-serif;
+}
+[data-font-preview="plex"] {
+  font-family: "IBM Plex Sans Variable", sans-serif;
+}
+[data-font-preview="editorial"] {
+  font-family: "Fraunces Variable", serif;
+}
+[data-font-preview="terminal"] {
+  font-family: "JetBrains Mono Variable", monospace;
+}
+
+/* Backdrops sit behind everything; position them with utilities. */
 .app-backdrop {
   pointer-events: none;
-  position: fixed;
-  inset: 0;
-  z-index: 0;
 }
 [data-backdrop="aurora"] .app-backdrop {
   background:
@@ -387,18 +478,18 @@
   }
 }
 
-.animate-rise {
+@utility animate-rise {
   animation: rise-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-.animate-grow-up {
+@utility animate-grow-up {
   transform-origin: bottom;
   animation: grow-up 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-.animate-grow-right {
+@utility animate-grow-right {
   transform-origin: left;
   animation: grow-right 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
-.animate-pulse-ring {
+@utility animate-pulse-ring {
   animation: pulse-ring 1.8s cubic-bezier(0.16, 1, 0.3, 1) infinite;
 }
 

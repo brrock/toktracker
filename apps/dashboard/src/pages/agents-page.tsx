@@ -45,8 +45,8 @@ const AgentCards = ({
             </div>
             <div className="mt-3 h-1.5 rounded-full bg-muted">
               <div
-                className="animate-grow-right h-full rounded-full bg-primary"
-                style={{ width: `${Math.max(2, share)}%` }}
+                className="animate-grow-right h-full w-(--bar-size) rounded-full bg-primary"
+                style={{ "--bar-size": `${Math.max(2, share)}%` }}
               />
             </div>
           </Link>

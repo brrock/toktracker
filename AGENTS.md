@@ -7,6 +7,7 @@ This project uses **Ultracite**, a zero-config preset that enforces strict code 
 - **Format code**: `bun x ultracite fix`
 - **Check for issues**: `bun x ultracite check`
 - **Diagnose setup**: `bun x ultracite doctor`
+- **Design-system rules**: `@shadcn/lint` runs with Oxlint (`bun run check`). Use theme tokens and `@utility` classes from `apps/dashboard/src/index.css`; pass dynamic values through CSS custom properties (`style={{ "--bar-size": "40%" }}` with `w-(--bar-size)`), never raw colors, arbitrary values or ordinary inline styles.
 
 Oxlint + Oxfmt (the underlying engine) provides robust linting and formatting. Most issues are automatically fixable.
 

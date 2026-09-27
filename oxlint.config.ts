@@ -14,11 +14,19 @@ export default defineConfig({
   jsPlugins: [
     { name: "anti-slop", specifier: "./tools/oxlint/anti-slop/index.ts" },
     // Design-system rules for the dashboard. Components and the Tailwind
-    // theme are discovered from apps/dashboard/components.json; no shadcn/*
-    // rules are enabled yet — add them under `rules` below.
+    // theme are discovered from apps/dashboard/components.json.
     "@shadcn/lint",
   ],
   overrides: [
+    {
+      // Components own their appearance and may need structural values.
+      files: ["apps/dashboard/src/components/ui/**"],
+      rules: {
+        "shadcn/no-arbitrary-values": "off",
+        "shadcn/no-restyle": "off",
+        "shadcn/require-static-classes": "off",
+      },
+    },
     {
       files: ["packages/token-calc/src/index.ts"],
       rules: { "oxc/no-barrel-file": "off" },
@@ -40,5 +48,12 @@ export default defineConfig({
     "anti-slop/no-unsafe-dictionary-type": "error",
     "anti-slop/no-widen-then-assert": "error",
     "anti-slop/require-safety-comment-for-type-assertion": "error",
+    // Design-system starter set (see docs/adoption.md in shadcn-ui/lint).
+    "shadcn/no-arbitrary-values": ["error", { allow: ["layout"] }],
+    "shadcn/no-inline-styles": "error",
+    "shadcn/no-raw-colors": "error",
+    "shadcn/no-restyle": ["error", { allow: ["layout"] }],
+    "shadcn/no-unknown-classes": "error",
+    "shadcn/require-static-classes": "error",
   },
 });

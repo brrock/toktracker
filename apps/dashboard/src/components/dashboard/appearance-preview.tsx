@@ -23,7 +23,7 @@ export const AppearancePreview = () => {
       aria-hidden="true"
       className="relative overflow-hidden rounded-2xl border bg-background shadow-2xl"
     >
-      <div className="app-backdrop" style={{ position: "absolute" }} />
+      <div className="app-backdrop absolute inset-0" />
       <div className="relative flex">
         <div className="hidden w-32 shrink-0 border-r bg-sidebar/80 p-3 sm:block">
           <div className="flex items-center gap-2">
@@ -37,7 +37,7 @@ export const AppearancePreview = () => {
               (item, index) => (
                 <div
                   key={item}
-                  className={`rounded-md px-2 py-1 text-[10px] ${index === 0 ? "bg-primary/10 font-medium text-foreground" : "text-muted-foreground"}`}
+                  className={`rounded-md px-2 py-1 text-3xs ${index === 0 ? "bg-primary/10 font-medium text-foreground" : "text-muted-foreground"}`}
                 >
                   {item}
                 </div>
@@ -47,10 +47,10 @@ export const AppearancePreview = () => {
         </div>
         <div className="min-w-0 flex-1 space-y-3 p-4">
           <div>
-            <p className="text-[9px] font-medium uppercase tracking-[0.14em] text-primary">
+            <p className="text-3xs font-medium uppercase tracking-caps text-primary">
               Preview
             </p>
-            <p className="text-gradient font-heading text-lg font-semibold">
+            <p className="gradient-heading font-heading text-lg font-semibold">
               {greeting(new Date(), appearance.displayName)}
             </p>
           </div>
@@ -60,7 +60,7 @@ export const AppearancePreview = () => {
               { icon: Zap, label: "Tokens", value: "128.4M" },
             ].map((stat, index) => (
               <div key={stat.label} className="surface-card p-2.5">
-                <div className="flex items-center justify-between text-[10px] text-muted-foreground">
+                <div className="flex items-center justify-between text-3xs text-muted-foreground">
                   {stat.label}
                   <stat.icon className="size-3 text-primary" />
                 </div>
@@ -77,18 +77,14 @@ export const AppearancePreview = () => {
             ))}
           </div>
           <div className="surface-card p-2.5">
-            <div className="text-[10px] font-medium">Spend over time</div>
+            <div className="text-3xs font-medium">Spend over time</div>
             <div className="mt-2 flex h-16 items-end gap-1">
               {PREVIEW_BARS.map((height, index) => (
                 <span
                   // oxlint-disable-next-line react/no-array-index-key -- static decorative bars
                   key={index}
-                  className="flex-1 rounded-t-[calc(var(--radius)*0.4)]"
-                  style={{
-                    background:
-                      "linear-gradient(to top, color-mix(in oklch, var(--chart-1) 55%, transparent), var(--chart-1))",
-                    height: `${height}%`,
-                  }}
+                  className="bar-fill h-(--bar-size) flex-1 rounded-t-sm"
+                  style={{ "--bar-size": `${height}%` }}
                 />
               ))}
             </div>
@@ -98,9 +94,10 @@ export const AppearancePreview = () => {
               {PREVIEW_SHARES.map((entry, index) => (
                 <span
                   key={entry.name}
+                  className="w-(--bar-size) bg-(--series)"
                   style={{
-                    background: SERIES_COLORS[index],
-                    width: `${entry.share}%`,
+                    "--bar-size": `${entry.share}%`,
+                    "--series": SERIES_COLORS[index] ?? "var(--chart-1)",
                   }}
                 />
               ))}
@@ -109,11 +106,13 @@ export const AppearancePreview = () => {
               {PREVIEW_SHARES.map((entry, index) => (
                 <span
                   key={entry.name}
-                  className="flex items-center gap-1 text-[9px] text-muted-foreground"
+                  className="flex items-center gap-1 text-3xs text-muted-foreground"
                 >
                   <span
-                    className="size-1.5 rounded-full"
-                    style={{ background: SERIES_COLORS[index] }}
+                    className="size-1.5 rounded-full bg-(--series)"
+                    style={{
+                      "--series": SERIES_COLORS[index] ?? "var(--chart-1)",
+                    }}
                   />
                   {entry.name} {entry.share}%
                 </span>
@@ -121,10 +120,10 @@ export const AppearancePreview = () => {
             </div>
           </div>
           <div className="flex gap-2">
-            <span className="rounded-lg bg-primary px-2.5 py-1 text-[10px] font-medium text-primary-foreground">
+            <span className="rounded-lg bg-primary px-2.5 py-1 text-3xs font-medium text-primary-foreground">
               Primary action
             </span>
-            <span className="rounded-lg border bg-card px-2.5 py-1 text-[10px] font-medium">
+            <span className="rounded-lg border bg-card px-2.5 py-1 text-3xs font-medium">
               Secondary
             </span>
           </div>

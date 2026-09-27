@@ -76,7 +76,7 @@ export const PairingDialog = () => {
           <input
             autoCapitalize="characters"
             autoComplete="one-time-code"
-            className="h-11 w-full rounded-lg border bg-card px-3 text-center font-mono text-base uppercase tracking-[0.2em] outline-none transition focus:border-primary focus:ring-3 focus:ring-primary/20"
+            className="h-11 w-full rounded-lg border bg-card px-3 text-center font-mono text-base uppercase tracking-code outline-none transition focus:border-primary focus:ring-3 focus:ring-primary/20"
             maxLength={64}
             onChange={(event) => setPairingCode(event.target.value)}
             placeholder="XXXX-XXXX-XXXX-XXXX"
@@ -90,7 +90,7 @@ export const PairingDialog = () => {
           </p>
         )}
         <button
-          className="brand-gradient h-10 w-full rounded-lg px-4 font-medium text-primary-foreground shadow-[0_8px_24px_-10px_var(--primary)] transition hover:brightness-110 disabled:opacity-50"
+          className="brand-gradient h-10 w-full rounded-lg px-4 font-medium text-primary-foreground shadow-glow-lg transition hover:brightness-110 disabled:opacity-50"
           disabled={pairing}
           type="submit"
         >

@@ -17,7 +17,7 @@ const AGENT_LOGOS = {
 export const BrandMark = ({ className }: { className?: string }) => (
   <span
     className={cn(
-      "brand-gradient grid size-8 shrink-0 place-items-center rounded-[calc(var(--radius)*1.1)] text-white shadow-[0_6px_18px_-6px_var(--primary)]",
+      "brand-gradient grid size-8 shrink-0 place-items-center rounded-lg text-white shadow-glow",
       className
     )}
   >
@@ -66,11 +66,11 @@ export const AgentLogo = ({
     <img
       src={source}
       alt=""
-      className={`${size} shrink-0 rounded-[calc(var(--radius)*0.6)] object-cover ring-1 ring-border`}
+      className={`${size} shrink-0 rounded-sm object-cover ring-1 ring-border`}
     />
   ) : (
     <span
-      className={`grid ${size} shrink-0 place-items-center rounded-[calc(var(--radius)*0.6)] bg-primary/10 text-primary`}
+      className={`grid ${size} shrink-0 place-items-center rounded-sm bg-primary/10 text-primary`}
     >
       <Bot className="size-1/2" />
     </span>
@@ -310,7 +310,7 @@ export const SegmentedControl = <T extends string>({
             checked={selected}
             onSelect={() => onChange(option.value)}
             className={cn(
-              "flex items-center whitespace-nowrap rounded-[calc(var(--radius)*0.75)] font-medium transition",
+              "flex items-center whitespace-nowrap rounded-md font-medium transition",
               size === "sm" ? "h-7 px-2.5 text-xs" : "h-8 px-3 text-sm",
               selected
                 ? "bg-card text-foreground shadow-sm ring-1 ring-border"

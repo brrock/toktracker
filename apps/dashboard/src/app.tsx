@@ -386,7 +386,7 @@ const App = () => {
             <div className="font-heading font-semibold leading-tight">
               TokTracker
             </div>
-            <div className="text-[11px] text-muted-foreground">
+            <div className="text-2xs text-muted-foreground">
               Usage intelligence
             </div>
           </div>
@@ -435,7 +435,7 @@ const App = () => {
             <span className="truncate">
               Search agents, projects, models, sessions…
             </span>
-            <kbd className="ml-auto hidden rounded-md border bg-muted px-1.5 py-0.5 font-mono text-[10px] font-medium sm:inline">
+            <kbd className="ml-auto hidden rounded-md border bg-muted px-1.5 py-0.5 font-mono text-3xs font-medium sm:inline">
               ⌘K
             </kbd>
           </button>
