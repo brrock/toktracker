@@ -12,27 +12,32 @@ import {
   syncCursorUsageCaches,
   upsertCursorAccount,
 } from "../../token-calc/src/index.ts";
+import { parseArgs } from "./args";
 import { readConfig } from "./runtime-config";
+import {
+  bold,
+  CliError,
+  didYouMean,
+  dim,
+  formatTable,
+  green,
+  printInfo,
+  printSuccess,
+  usageError,
+} from "./ui";
 
-const flagValue = (args: string[], name: string): string | undefined => {
-  const index = args.indexOf(name);
-  if (index === -1) {
-    return undefined;
+const HELP_COMMAND = "toktracker-client cursor";
+const ACTIONS = ["accounts", "login", "logout", "switch", "sync"];
+
+const requireAccount = (value: string | undefined): string => {
+  if (!value) {
+    throw usageError(
+      "An account ID or name is required",
+      `List accounts with ${bold(`${HELP_COMMAND} accounts`)}.`
+    );
   }
-  return args[index + 1];
+  return value;
 };
-
-const hasFlag = (args: string[], name: string): boolean => args.includes(name);
-
-const cursorUsage = (): string =>
-  [
-    "Usage:",
-    "  toktracker-client cursor login [--name <label>] [--token <session-token>]",
-    "  toktracker-client cursor accounts",
-    "  toktracker-client cursor switch <id-or-name>",
-    "  toktracker-client cursor logout <id-or-name> [--purge-cache]",
-    "  toktracker-client cursor sync [--force]",
-  ].join("\n");
 
 const clientCursorPaths = async (): Promise<CursorPaths> => {
   const config = await readConfig("client");
@@ -41,75 +46,93 @@ const clientCursorPaths = async (): Promise<CursorPaths> => {
 };
 
 export const runCursorCommand = async (args: string[]): Promise<void> => {
-  const [action, ...rest] = args;
-  if (!action || action === "--help" || action === "-h") {
-    console.log(cursorUsage());
-    return;
+  const [action = "", ...rest] = args;
+  if (!ACTIONS.includes(action)) {
+    throw usageError(
+      `Unknown cursor action "${action}"`,
+      didYouMean(action, ACTIONS) ?? `Run ${HELP_COMMAND} --help for usage.`
+    );
   }
   const paths = await clientCursorPaths();
   if (action === "login") {
-    const label = flagValue(rest, "--name");
-    const token = flagValue(rest, "--token");
+    const parsed = parseArgs(
+      rest,
+      { values: ["--name", "--token"] },
+      HELP_COMMAND
+    );
+    const label = parsed.values.get("--name");
+    const token = parsed.values.get("--token");
     if (token) {
       const id = await upsertCursorAccount(paths, token, label);
-      console.log(`Saved Cursor account ${id}`);
+      printSuccess(`Saved Cursor account ${bold(id)}`);
       return;
     }
     const imported = await importDesktopCursorAccounts(paths);
     if (imported.length === 0) {
-      throw new Error(
-        "Cursor desktop is not signed in. Open the Cursor app and sign in, or pass --token with a WorkosCursorSessionToken value."
+      throw new CliError(
+        "Cursor desktop is not signed in",
+        "Open the Cursor app and sign in, or pass --token with a WorkosCursorSessionToken value."
       );
     }
-    console.log(
-      `Imported ${imported.length} Cursor account(s) from the desktop app: ${imported.join(", ")}`
+    printSuccess(
+      `Imported ${imported.length} Cursor account${imported.length === 1 ? "" : "s"} from the desktop app: ${imported.join(", ")}`
     );
     return;
   }
   if (action === "accounts") {
+    parseArgs(rest, {}, HELP_COMMAND);
     const accounts = await listCursorAccounts(paths);
     if (accounts.length === 0) {
-      console.log("No saved Cursor accounts.");
+      console.log("No Cursor accounts are saved.");
+      console.log(dim(`Add one with: ${HELP_COMMAND} login`));
       return;
     }
-    for (const account of accounts) {
-      const mark = account.isActive ? "*" : " ";
-      const label = account.label ? ` (${account.label})` : "";
-      console.log(`${mark} ${account.id}${label}`);
-    }
-    return;
-  }
-  if (action === "switch") {
-    const name = rest[0];
-    if (!name) {
-      throw new Error("An account id or name is required");
-    }
-    const id = await setActiveCursorAccount(paths, name);
-    console.log(`Active Cursor account is ${id}`);
-    return;
-  }
-  if (action === "logout") {
-    const name = rest[0];
-    if (!name) {
-      throw new Error("An account id or name is required");
-    }
-    await removeCursorAccount(paths, name, hasFlag(rest, "--purge-cache"));
-    console.log(`Removed Cursor account ${name}`);
-    return;
-  }
-  if (action === "sync") {
-    const result = await syncCursorUsageCaches(paths, {
-      force: hasFlag(rest, "--force"),
-    });
-    if (!result.synced && result.error) {
-      throw new Error(result.error);
-    }
     console.log(
-      result.synced
-        ? `Synced Cursor usage (${result.rows} row(s))`
-        : "Cursor usage cache is already fresh"
+      formatTable(
+        accounts.map((account) => [
+          account.isActive ? green("●") : " ",
+          account.isActive ? bold(account.id) : account.id,
+          account.label ? dim(account.label) : "",
+        ])
+      )
     );
     return;
   }
-  throw new Error(cursorUsage());
+  if (action === "switch") {
+    const [name] = parseArgs(rest, {}, HELP_COMMAND).positionals;
+    const id = await setActiveCursorAccount(paths, requireAccount(name));
+    printSuccess(`Switched to Cursor account ${bold(id)}`);
+    return;
+  }
+  if (action === "logout") {
+    const parsed = parseArgs(
+      rest,
+      { booleans: ["--purge-cache"] },
+      HELP_COMMAND
+    );
+    const name = requireAccount(parsed.positionals[0]);
+    await removeCursorAccount(
+      paths,
+      name,
+      parsed.booleans.has("--purge-cache")
+    );
+    printSuccess(`Removed Cursor account ${bold(name)}`);
+    return;
+  }
+  const parsed = parseArgs(rest, { booleans: ["--force"] }, HELP_COMMAND);
+  const result = await syncCursorUsageCaches(paths, {
+    force: parsed.booleans.has("--force"),
+  });
+  if (!result.synced && result.error) {
+    throw new CliError(`Cursor sync failed: ${result.error}`);
+  }
+  if (result.synced) {
+    printSuccess(
+      `Synced Cursor usage (${result.rows} row${result.rows === 1 ? "" : "s"})`
+    );
+    return;
+  }
+  printInfo(
+    `Cursor usage is already up to date. ${dim("Use --force to sync anyway.")}`
+  );
 };

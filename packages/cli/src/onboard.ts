@@ -11,30 +11,101 @@ import { ensureLauncher, readActiveInstallation } from "./installation";
 import {
   applicationDirectory,
   applicationRoot,
-  configPath,
   dataDirectory,
+  readConfig,
   writeConfig,
 } from "./runtime-config";
 import type { ServiceRole } from "./runtime-config";
+import {
+  bold,
+  CliError,
+  cyan,
+  dim,
+  formatTable,
+  printStep,
+  printSuccess,
+  printWarning,
+  red,
+  symbols,
+} from "./ui";
 
 const { join } = path;
 let terminal: Interface | undefined;
+let cancellation: AbortController | undefined;
 
-const ask = async (question: string, fallback?: string): Promise<string> => {
+const cancelledError = (): CliError =>
+  new CliError("Setup cancelled; nothing was changed");
+
+const ask = async (
+  question: string,
+  fallback?: string,
+  fallbackLabel = fallback
+): Promise<string> => {
   if (!terminal) {
     throw new Error("Setup terminal is unavailable");
   }
-  const suffix = fallback ? ` [${fallback}]` : "";
-  const answer = await terminal.question(`${question}${suffix}: `);
+  const suffix = fallbackLabel ? ` ${dim(`(${fallbackLabel})`)}` : "";
+  const signal = cancellation?.signal ?? new AbortController().signal;
+  if (signal.aborted) {
+    throw cancelledError();
+  }
+  let answer: string;
+  try {
+    answer = await terminal.question(
+      `${cyan("?")} ${bold(question)}${suffix} `,
+      { signal }
+    );
+  } catch (error) {
+    if (signal.aborted) {
+      throw cancelledError();
+    }
+    throw error;
+  }
+  // Bun resolves pending questions with "" when the interface closes.
+  if (signal.aborted) {
+    throw cancelledError();
+  }
   return answer.trim() || fallback || "";
+};
+/** Re-asks until the answer parses, instead of aborting the whole setup. */
+const askUntilValid = async (
+  question: string,
+  fallback: string,
+  parse: (value: string) => string
+): Promise<string> => {
+  for (;;) {
+    const answer = await ask(question, fallback);
+    try {
+      return parse(answer);
+    } catch (error) {
+      console.log(
+        `  ${red(`${symbols.error} ${error instanceof Error ? error.message : String(error)}`)}`
+      );
+    }
+  }
 };
 const confirm = async (
   question: string,
   defaultValue = true
 ): Promise<boolean> => {
-  const response = await ask(`${question} (${defaultValue ? "Y/n" : "y/N"})`);
-  const answer = response.toLowerCase();
-  return answer ? answer === "y" || answer === "yes" : defaultValue;
+  for (;;) {
+    const response = await ask(
+      question,
+      undefined,
+      defaultValue ? "Y/n" : "y/N"
+    );
+    const answer = response.toLowerCase();
+    if (!answer) {
+      return defaultValue;
+    }
+    if (answer === "y" || answer === "yes") {
+      return true;
+    }
+    if (answer === "n" || answer === "no") {
+      return false;
+    }
+    console.log(`  ${red(`${symbols.error} Please answer y or n`)}`);
+  }
 };
 const xmlEscape = (value: string): string =>
   value
@@ -92,9 +163,12 @@ export const installService = async (
       run(["systemctl", "--user", "daemon-reload"]) &&
       run(["systemctl", "--user", "enable", "--now", serviceName]);
     if (!installed) {
-      throw new Error(`Could not enable ${unitPath}`);
+      throw new CliError(
+        `Could not enable ${unitPath}`,
+        "Make sure systemd user services are available (systemctl --user status)."
+      );
     }
-    console.log(`Installed systemd user service: ${unitPath}`);
+    printSuccess(`Installed systemd user service ${dim(unitPath)}`);
     return;
   }
 
@@ -112,7 +186,7 @@ export const installService = async (
     if (!run(["launchctl", "bootstrap", domain, plistPath])) {
       throw new Error(`Could not load ${plistPath}`);
     }
-    console.log(`Installed launchd service: ${plistPath}`);
+    printSuccess(`Installed launchd service ${dim(plistPath)}`);
     return;
   }
 
@@ -134,7 +208,7 @@ export const installService = async (
       throw new Error(`Could not create Windows startup task ${taskName}`);
     }
     run(["schtasks.exe", "/Run", "/TN", taskName]);
-    console.log(`Installed Windows startup task: ${taskName}`);
+    printSuccess(`Installed Windows startup task ${dim(taskName)}`);
     return;
   }
 
@@ -150,7 +224,7 @@ const checkGateway = async (
     signal: AbortSignal.timeout(5000),
   });
   if (response.status === 401) {
-    throw new Error("Wrong encryption key");
+    throw new Error("the gateway rejected that encryption key");
   }
   if (!response.ok) {
     throw new Error(`Gateway returned HTTP ${response.status}`);
@@ -158,9 +232,14 @@ const checkGateway = async (
 };
 
 const normalizeUrl = (value: string): string => {
-  const url = new URL(value);
+  let url: URL;
+  try {
+    url = new URL(value.includes("://") ? value : `http://${value}`);
+  } catch {
+    throw new Error("expected a URL such as http://server:3000");
+  }
   if (url.protocol !== "http:" && url.protocol !== "https:") {
-    throw new Error("URL must use http:// or https://");
+    throw new Error("the URL must start with http:// or https://");
   }
   return url.toString().replace(/\/$/u, "");
 };
@@ -169,47 +248,65 @@ const generatedAccessKey = (): string =>
   crypto.randomUUID().replaceAll("-", "") +
   crypto.randomUUID().replaceAll("-", "");
 
-const configureGatewayNetwork = async (): Promise<{
+const parsePort = (value: string): string => {
+  if (!/^\d+$/u.test(value) || Number(value) < 1 || Number(value) > 65_535) {
+    throw new Error("enter a port between 1 and 65535");
+  }
+  return value;
+};
+const parseBindAddress = (value: string): string => {
+  if (isIP(value) === 0) {
+    throw new Error("enter an IPv4 or IPv6 address without a port");
+  }
+  return value;
+};
+const isLoopbackHost = (host: string): boolean =>
+  host === "::1" || host.startsWith("127.");
+
+const configureGatewayNetwork = async (
+  existing: Record<string, string>
+): Promise<{
   accessKey: string;
   exposeToLan: boolean;
   host: string;
 }> => {
+  const existingKey = existing.TOKTRACKER_API_KEY ?? "";
+  const existingHost = existing.HOST ?? "127.0.0.1";
   let accessKey = "";
   if (
     await confirm(
-      "Protect and encrypt client ingestion with a shared key",
-      false
+      "Protect and encrypt client uploads with a shared key?",
+      Boolean(existingKey)
     )
   ) {
-    accessKey = await ask("Client ingestion key (leave blank to generate)");
+    accessKey = await ask(
+      "Shared key",
+      existingKey,
+      existingKey ? "Enter keeps the current key" : "Enter generates one"
+    );
     accessKey ||= generatedAccessKey();
   }
   const exposeToLan = await confirm(
-    "Expose the gateway to other devices on your LAN",
-    false
+    "Allow other devices on your network to connect?",
+    !isLoopbackHost(existingHost)
   );
-  if (exposeToLan && !accessKey) {
-    console.log("LAN access requires a shared key; generating one now.");
-    accessKey = generatedAccessKey();
-  }
   if (!exposeToLan) {
     return { accessKey, exposeToLan, host: "127.0.0.1" };
   }
-  console.log(
-    "Warning: LAN access exposes usage metadata. Firewall the port and keep the generated key private."
-  );
-  const host = await ask(
-    "Gateway bind address (leave as 0.0.0.0 for all IPv4 interfaces)",
-    "0.0.0.0"
-  );
-  if (isIP(host) === 0) {
-    throw new Error(
-      "Bind address must be an IPv4 or IPv6 address without a port"
-    );
+  if (!accessKey) {
+    printStep("Network access requires a shared key, so one was generated.");
+    accessKey = generatedAccessKey();
   }
+  printWarning(
+    "Network access exposes usage metadata. Firewall the port and keep the key private."
+  );
+  const host = await askUntilValid(
+    "Bind address (0.0.0.0 listens on every IPv4 interface)",
+    isLoopbackHost(existingHost) ? "0.0.0.0" : existingHost,
+    parseBindAddress
+  );
   return { accessKey, exposeToLan, host };
 };
-
 const gatewayAddresses = (
   host: string,
   port: string,
@@ -233,94 +330,155 @@ const gatewayAddresses = (
   return addresses;
 };
 
-const setupGateway = async (): Promise<void> => {
-  const port = await ask("Gateway port", "3000");
-  if (!/^\d+$/u.test(port) || Number(port) < 1 || Number(port) > 65_535) {
-    throw new Error("Port must be between 1 and 65535");
-  }
-  const { accessKey, exposeToLan, host } = await configureGatewayNetwork();
-  const updateChannel = (await confirm(
-    "Receive nightly prerelease updates",
-    false
+const askUpdateChannel = async (
+  existing: Record<string, string>
+): Promise<"nightly" | "stable"> =>
+  (await confirm(
+    "Receive nightly prerelease updates?",
+    existing.TOKTRACKER_UPDATE_CHANNEL === "nightly"
   ))
     ? "nightly"
     : "stable";
-  const config = await writeConfig("gateway", {
-    HOST: host,
-    PORT: port,
-    TOKTRACKER_API_KEY: accessKey,
-    TOKTRACKER_DB: join(dataDirectory("gateway"), "toktracker.db"),
-    TOKTRACKER_UPDATE_CHANNEL: updateChannel,
-  });
-  await installService("gateway");
-  const addresses = gatewayAddresses(host, port, exposeToLan);
-  console.log(`\nGateway configured in ${config}`);
-  console.log("Use one of these URLs when setting up a client:");
-  for (const address of addresses) {
-    console.log(`  ${address}`);
-  }
-  if (accessKey) {
-    console.log(`Client ingestion key: ${accessKey}`);
+
+const printSummary = (title: string, rows: string[][]): void => {
+  console.log(`\n${bold(title)}`);
+  console.log(formatTable(rows, "  "));
+};
+
+const printNextSteps = (steps: readonly string[]): void => {
+  console.log(`\n${bold("Next steps")}`);
+  for (const [index, step] of steps.entries()) {
+    console.log(`  ${dim(`${index + 1}.`)} ${step}`);
   }
 };
 
-const setupClient = async (): Promise<void> => {
+const setupGateway = async (
+  existing: Record<string, string>
+): Promise<void> => {
+  const port = await askUntilValid(
+    "Gateway port",
+    existing.PORT ?? "3000",
+    parsePort
+  );
+  const { accessKey, exposeToLan, host } =
+    await configureGatewayNetwork(existing);
+  const updateChannel = await askUpdateChannel(existing);
+  console.log("");
+  const config = await writeConfig("gateway", {
+    ...existing,
+    HOST: host,
+    PORT: port,
+    TOKTRACKER_API_KEY: accessKey,
+    TOKTRACKER_DB:
+      existing.TOKTRACKER_DB || join(dataDirectory("gateway"), "toktracker.db"),
+    TOKTRACKER_UPDATE_CHANNEL: updateChannel,
+  });
+  printSuccess(`Saved settings to ${dim(config)}`);
+  await installService("gateway");
+  const [localUrl = `http://localhost:${port}`, ...networkUrls] =
+    gatewayAddresses(host, port, exposeToLan);
+  const rows = [["Dashboard", cyan(localUrl)]];
+  for (const [index, url] of networkUrls.entries()) {
+    rows.push([index === 0 ? "Network URLs" : "", cyan(url)]);
+  }
+  rows.push(["Shared key", accessKey ? bold(accessKey) : dim("none")]);
+  printSummary("TokTracker gateway is ready", rows);
+  printNextSteps([
+    `Create a pairing code: ${bold("toktracker-gateway auth code")}`,
+    `Open ${cyan(localUrl)} and enter the code`,
+    `Install the client on each computer to track, using ${networkUrls.length > 0 ? "a network URL" : "the dashboard URL"}${accessKey ? " and the shared key" : ""}`,
+  ]);
+};
+
+const setupClient = async (existing: Record<string, string>): Promise<void> => {
   let gatewayUrl = "";
-  let accessKey = "";
+  let accessKey = existing.TOKTRACKER_API_KEY ?? "";
   while (!gatewayUrl) {
+    const candidate = await askUntilValid(
+      "Gateway URL",
+      existing.TOKTRACKER_GATEWAY ?? "http://localhost:3000",
+      normalizeUrl
+    );
+    accessKey = await ask(
+      "Shared key",
+      accessKey,
+      accessKey
+        ? "Enter keeps the current key"
+        : "leave blank if the gateway has none"
+    );
+    printStep(`Checking ${candidate}`);
     try {
-      const candidate = normalizeUrl(
-        await ask("Gateway URL", "http://localhost:3000")
-      );
-      accessKey = await ask("Gateway encryption key (leave blank if none)");
       await checkGateway(candidate, accessKey);
       gatewayUrl = candidate;
+      printSuccess("Connected to the gateway");
     } catch (error) {
-      console.error(
-        `Gateway check failed: ${error instanceof Error ? error.message : String(error)}`
-      );
-      console.log("Please enter a different URL or key.\n");
+      let reason = error instanceof Error ? error.message : String(error);
+      if (error instanceof Error && error.name === "TimeoutError") {
+        reason = "the gateway did not respond within 5 seconds";
+      }
+      console.log(`  ${red(`${symbols.error} Could not connect: ${reason}`)}`);
+      console.log(dim("  Check the URL and key, then try again.\n"));
     }
   }
-  const updateChannel = (await confirm(
-    "Receive nightly prerelease updates",
-    false
-  ))
-    ? "nightly"
-    : "stable";
+  const updateChannel = await askUpdateChannel(existing);
   const gatewayProviderSettings = await confirm(
-    "Can the gateway control your provider settings",
-    true
+    "Let the gateway manage provider settings on this computer?",
+    existing.TOKTRACKER_GATEWAY_PROVIDER_SETTINGS !== "0"
   );
+  console.log("");
   const config = await writeConfig("client", {
+    ...existing,
     TOKTRACKER_API_KEY: accessKey,
-    TOKTRACKER_DATA_DIR: dataDirectory("client"),
+    TOKTRACKER_DATA_DIR:
+      existing.TOKTRACKER_DATA_DIR || dataDirectory("client"),
     TOKTRACKER_GATEWAY: gatewayUrl,
     TOKTRACKER_GATEWAY_PROVIDER_SETTINGS: gatewayProviderSettings ? "1" : "0",
     TOKTRACKER_UPDATE_CHANNEL: updateChannel,
   });
+  printSuccess(`Saved settings to ${dim(config)}`);
   await installService("client");
-  console.log(`\nClient configured in ${config}`);
-  console.log(`Uploading to ${gatewayUrl}`);
+  printSummary("TokTracker client is ready", [
+    ["Uploading to", cyan(gatewayUrl)],
+    ["Updates", updateChannel],
+  ]);
+  printNextSteps([
+    "Usage appears in the dashboard after the first scan (within a few minutes)",
+    `Check on the client any time with ${bold("toktracker-client status")}`,
+  ]);
 };
 
 export const setupRole = async (role: ServiceRole): Promise<void> => {
   if (!process.stdin.isTTY) {
-    throw new Error(
-      "Setup requires an interactive terminal. Run this command directly, not through a pipe."
+    throw new CliError(
+      "Setup needs an interactive terminal",
+      `Run ${bold(`toktracker-${role} setup`)} directly rather than through a pipe.`
     );
   }
+  const existing = await readConfig(role);
   terminal = createInterface({
     input: process.stdin,
     output: process.stdout,
     terminal: true,
   });
+  cancellation = new AbortController();
+  terminal.on("SIGINT", () => {
+    cancellation?.abort();
+    console.log("");
+  });
   try {
-    console.log(`TokTracker ${role} setup\nConfig: ${configPath(role)}\n`);
+    console.log(`${bold(`TokTracker ${role} setup`)}`);
+    console.log(
+      dim(
+        Object.keys(existing).length > 0
+          ? "Press Enter to keep the current value shown in parentheses.\n"
+          : "Press Enter to accept the default shown in parentheses.\n"
+      )
+    );
     const setup = role === "gateway" ? setupGateway : setupClient;
-    await setup();
+    await setup(existing);
   } finally {
-    terminal.close();
+    terminal?.close();
     terminal = undefined;
+    cancellation = undefined;
   }
 };

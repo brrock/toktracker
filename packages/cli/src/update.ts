@@ -17,6 +17,16 @@ import {
 import { installService } from "./onboard";
 import { applicationRoot, configPath, readConfig } from "./runtime-config";
 import type { ServiceRole } from "./runtime-config";
+import {
+  bold,
+  CliError,
+  dim,
+  formatTable,
+  green,
+  printStep,
+  printSuccess,
+  printWarning,
+} from "./ui";
 
 interface ReleaseAsset {
   browser_download_url: string;
@@ -59,8 +69,20 @@ const fetchReleaseJson = async <Value>(
     headers: releaseHeaders(),
     signal: AbortSignal.timeout(RELEASE_API_TIMEOUT_MS),
   });
+  if (response.status === 404) {
+    throw new CliError(
+      "That release was not found on GitHub",
+      "Check the version tag. Released versions are listed at the repository's Releases page."
+    );
+  }
+  if (response.status === 403 || response.status === 429) {
+    throw new CliError(
+      "GitHub rate-limited the update check",
+      "Wait a few minutes, or set GITHUB_TOKEN to raise the limit."
+    );
+  }
   if (!response.ok) {
-    throw new Error(
+    throw new CliError(
       `GitHub returned HTTP ${response.status}: ${await response.text()}`
     );
   }
@@ -90,7 +112,10 @@ const findRelease = async (
     (release) => release.prerelease && release.tag_name.startsWith("nightly-")
   );
   if (!nightly) {
-    throw new Error("No nightly release is available");
+    throw new CliError(
+      "No nightly release is available",
+      "Use the stable channel instead: update --stable"
+    );
   }
   return nightly;
 };
@@ -223,13 +248,14 @@ export const switchInstalledVersion = async (
   }
 
   try {
+    printStep(`Restarting the ${role} service`);
     await installService(role);
     if (!restartService(role) || !(await verifyServiceStarted(role, config))) {
       throw new Error(`TokTracker ${role} ${version} did not start`);
     }
   } catch (error) {
-    console.error(
-      "Activation failed; restoring the previous TokTracker version"
+    printWarning(
+      `${version} did not start; restoring the previous TokTracker version`
     );
     await restoreActiveInstallation(role, previous);
     await ensureLauncher(role);
@@ -264,8 +290,9 @@ export const updateRole = async (
   const repository =
     process.env.TOKTRACKER_RELEASE_REPOSITORY ?? localManifest?.repository;
   if (!repository) {
-    throw new Error(
-      "Release repository is unknown. Install a release package or set TOKTRACKER_RELEASE_REPOSITORY."
+    throw new CliError(
+      "Updates are unavailable for this installation",
+      "This looks like a source checkout. Install a release package, or set TOKTRACKER_RELEASE_REPOSITORY=owner/repo."
     );
   }
   const config = await readConfig(role);
@@ -273,10 +300,17 @@ export const updateRole = async (
   const channel =
     requestedChannel ??
     (configuredChannel === "nightly" ? "nightly" : "stable");
+  printStep(
+    requestedVersion
+      ? `Looking up release ${requestedVersion}`
+      : `Checking for the latest ${channel} release`
+  );
   const release = await findRelease(repository, channel, requestedVersion);
   const active = await readActiveInstallation(role);
   if (!force && active?.version === release.tag_name) {
-    console.log(`TokTracker ${role} is already on ${release.tag_name}`);
+    printSuccess(
+      `TokTracker ${role} is up to date (${bold(release.tag_name)}, ${channel})`
+    );
     return;
   }
   const assetName = `toktracker-${role}-${release.tag_name}.tgz`;
@@ -287,8 +321,9 @@ export const updateRole = async (
     (candidate) => candidate.name === `${assetName}.sha256`
   );
   if (!asset || !checksumAsset) {
-    throw new Error(
-      `Release ${release.tag_name} does not contain ${assetName} and its checksum`
+    throw new CliError(
+      `Release ${release.tag_name} does not contain ${assetName} and its checksum`,
+      "The release may still be publishing. Try again in a few minutes."
     );
   }
 
@@ -297,11 +332,15 @@ export const updateRole = async (
   );
   const archivePath = path.join(temporaryRoot, assetName);
   try {
+    printStep(
+      `Downloading ${release.tag_name}${active ? dim(` (currently ${active.version})`) : ""}`
+    );
     await downloadVerifiedArchive(asset, checksumAsset, archivePath);
+    printStep("Checksum verified, installing");
     await extractVersionArchive(role, release.tag_name, archivePath);
     await switchInstalledVersion(role, release.tag_name);
-    console.log(
-      `Updated TokTracker ${role} to ${release.tag_name} (${channel})`
+    printSuccess(
+      `Updated TokTracker ${role} to ${bold(release.tag_name)} (${channel})`
     );
   } finally {
     await rm(temporaryRoot, { force: true, recursive: true }).catch(
@@ -316,21 +355,33 @@ export const listInstalledVersions = async (
   const active = await readActiveInstallation(role);
   const versions = await installedVersions(role);
   if (versions.length === 0) {
-    console.log(`No TokTracker ${role} versions are installed`);
+    console.log(`No release versions of TokTracker ${role} are installed.`);
+    console.log(dim(`Install one with: toktracker-${role} update`));
     return;
   }
-  for (const version of versions) {
-    const marker = active?.version === version ? "*" : " ";
-    console.log(`${marker} ${version}`);
-  }
+  const rows = versions.map((version) => {
+    if (active?.version === version) {
+      return [green("●"), bold(version), green("active")];
+    }
+    return [
+      " ",
+      version,
+      active?.previousVersion === version ? dim("previous") : "",
+    ];
+  });
+  console.log(formatTable(rows));
+  console.log(dim(`\nSwitch with: toktracker-${role} use <version>`));
 };
 
 export const rollbackRole = async (role: ServiceRole): Promise<void> => {
   const active = await readActiveInstallation(role);
   if (!active?.previousVersion) {
-    throw new Error(`No previous TokTracker ${role} version is available`);
+    throw new CliError(
+      `There is no previous TokTracker ${role} version to roll back to`,
+      `See installed versions with toktracker-${role} versions.`
+    );
   }
   const target = active.previousVersion;
   await switchInstalledVersion(role, target);
-  console.log(`Rolled back TokTracker ${role} to ${target}`);
+  printSuccess(`Rolled back TokTracker ${role} to ${bold(target)}`);
 };
