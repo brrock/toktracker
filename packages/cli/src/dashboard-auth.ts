@@ -1,6 +1,15 @@
 import { Database } from "bun:sqlite";
 
 import { readConfig } from "./runtime-config";
+import {
+  bold,
+  CliError,
+  didYouMean,
+  dim,
+  formatTable,
+  printSuccess,
+  usageError,
+} from "./ui";
 
 const PAIRING_CODE_TTL_MS = 10 * 60 * 1000;
 const AUTH_SCHEMA = `
@@ -24,7 +33,10 @@ const openAuthDatabase = async (): Promise<Database> => {
   const config = await readConfig("gateway");
   const databasePath = process.env.TOKTRACKER_DB ?? config.TOKTRACKER_DB;
   if (!databasePath) {
-    throw new Error("Gateway database is not configured. Run setup first.");
+    throw new CliError(
+      "The gateway database is not configured",
+      `Run ${bold("toktracker-gateway setup")} first.`
+    );
   }
   const database = new Database(databasePath, { create: true, strict: true });
   database.exec("PRAGMA foreign_keys=ON;");
@@ -44,8 +56,11 @@ const createCode = (database: Database): void => {
       "INSERT INTO dashboard_pairing_codes(code_hash,created_at,expires_at) VALUES(?,?,?)"
     )
     .run(hashSecret(normalizePairingCode(code)), now, expiresAt);
-  console.log(`Dashboard pairing code: ${code}`);
-  console.log(`Expires: ${new Date(expiresAt).toLocaleString()}`);
+  const minutes = Math.round(PAIRING_CODE_TTL_MS / 60_000);
+  console.log(`\n  ${bold(code)}\n`);
+  console.log(
+    `Enter this code in the dashboard to pair a browser. ${dim(`It expires in ${minutes} minutes (${new Date(expiresAt).toLocaleTimeString()}) and works once.`)}`
+  );
 };
 
 const listDevices = (database: Database): void => {
@@ -58,14 +73,25 @@ const listDevices = (database: Database): void => {
     )
     .all();
   if (devices.length === 0) {
-    console.log("No paired dashboard devices.");
+    console.log("No browsers are paired with the dashboard yet.");
+    console.log(
+      dim(`Create a pairing code with: ${bold("toktracker-gateway auth code")}`)
+    );
     return;
   }
-  for (const device of devices) {
-    console.log(
-      `${device.id}\t${device.name}\tlast seen ${new Date(device.lastSeen).toLocaleString()}`
-    );
-  }
+  const rows = [
+    [bold("ID"), bold("Name"), bold("Paired"), bold("Last seen")],
+    ...devices.map((device) => [
+      device.id,
+      device.name,
+      new Date(device.createdAt).toLocaleDateString(),
+      new Date(device.lastSeen).toLocaleString(),
+    ]),
+  ];
+  console.log(formatTable(rows));
+  console.log(
+    dim("\nSign a browser out with: toktracker-gateway auth revoke <id>")
+  );
 };
 
 const revokeDevice = (
@@ -73,21 +99,35 @@ const revokeDevice = (
   deviceId: string | undefined
 ): void => {
   if (!deviceId) {
-    throw new Error("Usage: toktracker-gateway auth revoke <device-id>");
+    throw usageError(
+      "A device ID is required",
+      `Find it with ${bold("toktracker-gateway auth devices")}.`
+    );
   }
   const result = database
     .query("DELETE FROM dashboard_devices WHERE id=?")
     .run(deviceId);
   if (result.changes === 0) {
-    throw new Error(`No paired dashboard device has ID ${deviceId}`);
+    throw new CliError(
+      `No paired browser has ID ${deviceId}`,
+      `List paired browsers with ${bold("toktracker-gateway auth devices")}.`
+    );
   }
-  console.log(`Signed out dashboard device ${deviceId}`);
+  printSuccess(`Signed out browser ${bold(deviceId)}`);
 };
 
 export const runDashboardAuthCommand = async (
   args: string[]
 ): Promise<void> => {
   const [action = "devices", deviceId] = args;
+  const actions = ["code", "devices", "list", "pair", "revoke", "sign-out"];
+  if (!actions.includes(action)) {
+    throw usageError(
+      `Unknown auth action "${action}"`,
+      didYouMean(action, ["code", "devices", "revoke"]) ??
+        "Run toktracker-gateway auth --help for usage."
+    );
+  }
   const database = await openAuthDatabase();
   try {
     if (action === "code" || action === "pair") {
@@ -98,13 +138,7 @@ export const runDashboardAuthCommand = async (
       listDevices(database);
       return;
     }
-    if (action === "revoke" || action === "sign-out") {
-      revokeDevice(database, deviceId);
-      return;
-    }
-    throw new Error(
-      "Usage: toktracker-gateway auth [code|devices|revoke <device-id>]"
-    );
+    revokeDevice(database, deviceId);
   } finally {
     database.close();
   }

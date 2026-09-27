@@ -74,9 +74,13 @@ TokTracker scans these local agent-data locations. Cursor usage is the exception
 
 ## Configuration, updates, and pairing
 
-Each role has its own CLI. `config` lists supported fields; encryption keys are masked in its output.
+Each role has its own CLI. Run it with no arguments (or `--help`) for an overview, and `<command> --help` for details and examples. `config` lists supported fields with descriptions; encryption keys are masked in its output. Set `NO_COLOR=1` to disable colors, or `TOKTRACKER_DEBUG=1` to include stack traces in errors.
 
 ```bash
+# Check the version, background service, and gateway connectivity
+toktracker-gateway status
+toktracker-client status
+
 # See configuration and its file location
 toktracker-gateway config
 toktracker-client config path
