@@ -35,6 +35,13 @@ const MAX_PAIRING_BODY_BYTES = 4096;
 const MAX_API_BODY_BYTES = 64 * 1024;
 const PAIRING_FAILURE_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PAIRING_FAILURES = 20;
+// Sandboxed dashboard worker scripts; see the sandbox policy in createApp.
+const SANDBOX_PATH_PREFIX = "/sandbox/";
+const SECURE_PERMISSIONS_POLICY = {
+  camera: [],
+  geolocation: [],
+  microphone: [],
+};
 const IMMUTABLE_ASSET_CACHE_CONTROL = "public, max-age=31536000, immutable";
 const JSON_CONTENT_TYPE = /^application\/(?:[\w.+-]+\+)?json\s*(?:;|$)/iu;
 const LOOPBACK_HOSTNAMES = new Set(["localhost", "[::1]", "::1"]);
@@ -268,27 +275,44 @@ export const createApp = (
   });
   // Summary JSON and the dashboard bundle compress roughly 5x.
   app.use("*", compress());
-  app.use(
-    "*",
-    secureHeaders({
-      contentSecurityPolicy: {
-        baseUri: ["'self'"],
-        connectSrc: ["'self'"],
-        defaultSrc: ["'self'"],
-        fontSrc: ["'self'"],
-        frameAncestors: ["'none'"],
-        imgSrc: ["'self'", "data:"],
-        objectSrc: ["'none'"],
-        scriptSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-      },
-      permissionsPolicy: {
-        camera: [],
-        geolocation: [],
-        microphone: [],
-      },
-      xFrameOptions: "DENY",
-    })
+  const pageHeaders = secureHeaders({
+    contentSecurityPolicy: {
+      baseUri: ["'self'"],
+      connectSrc: ["'self'"],
+      defaultSrc: ["'self'"],
+      fontSrc: ["'self'"],
+      frameAncestors: ["'none'"],
+      imgSrc: ["'self'", "data:"],
+      objectSrc: ["'none'"],
+      scriptSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+    },
+    permissionsPolicy: SECURE_PERMISSIONS_POLICY,
+    xFrameOptions: "DENY",
+  });
+  // Dashboard query widgets run user-written code in a dedicated worker
+  // loaded from /sandbox/. A worker takes its CSP from its own script
+  // response, so this policy lets that worker evaluate code and compile
+  // SQLite's WebAssembly while forbidding every network request (so it
+  // cannot use the dashboard session) and every other resource. The main
+  // page keeps the strict policy above.
+  const sandboxHeaders = secureHeaders({
+    contentSecurityPolicy: {
+      baseUri: ["'none'"],
+      connectSrc: ["'none'"],
+      defaultSrc: ["'none'"],
+      formAction: ["'none'"],
+      frameAncestors: ["'none'"],
+      scriptSrc: ["'self'", "'unsafe-eval'", "'wasm-unsafe-eval'"],
+      workerSrc: ["'none'"],
+    },
+    permissionsPolicy: SECURE_PERMISSIONS_POLICY,
+    xFrameOptions: "DENY",
+  });
+  app.use("*", (context, next) =>
+    context.req.path.startsWith(SANDBOX_PATH_PREFIX)
+      ? sandboxHeaders(context, next)
+      : pageHeaders(context, next)
   );
   const allowedOrigin = process.env.TOKTRACKER_CORS_ORIGIN;
   if (allowedOrigin) {
@@ -849,6 +873,11 @@ export const createApp = (
       const candidateStat = await candidate.stat();
       candidateIsFile = candidateStat.isFile();
     }
+    // Never fall back to the app shell under /sandbox/: it would run with the
+    // sandbox policy, which allows eval.
+    if (!candidateIsFile && context.req.path.startsWith(SANDBOX_PATH_PREFIX)) {
+      return context.text("Not found", 404);
+    }
     const file = candidateIsFile ? candidate : Bun.file(dashboardIndex);
     if (!(await file.exists())) {
       return context.text(
@@ -859,7 +888,9 @@ export const createApp = (
     // Vite fingerprints everything under assets/, so those files can be
     // cached forever; the HTML shell must be revalidated to pick up releases.
     const cacheControl =
-      candidateIsFile && context.req.path.startsWith("/assets/")
+      candidateIsFile &&
+      (context.req.path.startsWith("/assets/") ||
+        context.req.path.startsWith(SANDBOX_PATH_PREFIX))
         ? IMMUTABLE_ASSET_CACHE_CONTROL
         : "no-cache";
     return new Response(file, { headers: { "cache-control": cacheControl } });

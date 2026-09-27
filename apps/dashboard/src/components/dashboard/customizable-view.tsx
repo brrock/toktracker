@@ -4,6 +4,7 @@ import {
   ArrowDown,
   ArrowUp,
   Check,
+  Code2,
   GripVertical,
   LayoutGrid,
   Plus,
@@ -12,7 +13,15 @@ import {
   Sparkles,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useId, useState } from "react";
+import {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useId,
+  useMemo,
+  useState,
+} from "react";
 
 import {
   Dialog,
@@ -30,12 +39,14 @@ import {
   LAYOUT_CHANGE_EVENT,
   moveWidget,
   parseLayout,
+  RESULT_DISPLAYS,
   readLayout,
   saveLayout,
   SLOT_IDS,
   SLOT_LABELS,
   TIMELINE_STYLES,
   uniqueWidgetId,
+  VALUE_FORMATS,
   WIDGET_SIZES,
   widgetTemplates,
 } from "@/lib/layout";
@@ -48,12 +59,37 @@ import type {
   WidgetDraft,
   WidgetSize,
 } from "@/lib/layout";
+import { STARTER_CODE } from "@/lib/query/contract";
+import type { Tables } from "@/lib/query/contract";
+import { buildTables } from "@/lib/query/dataset";
+import type { QuerySource } from "@/lib/query/dataset";
 import { cn } from "@/lib/utils";
 
 import { DailySpendChart, UsageBreakdownChart } from "./charts";
 import type { ChartMetric } from "./charts";
-import { METRIC_OPTIONS, SegmentedControl } from "./primitives";
+import { METRIC_OPTIONS, SegmentedControl, Skeleton } from "./primitives";
+import type { QueryDraft } from "./query/query-editor";
 import { SessionTable } from "./session-table";
+
+// Query widgets and their editor load on demand, so views without queries
+// do not download them.
+const QueryWidget = lazy(async () => {
+  const module = await import("./query/query-widget");
+  return { default: module.QueryWidget };
+});
+const QueryEditorDialog = lazy(async () => {
+  const module = await import("./query/query-editor");
+  return { default: module.QueryEditorDialog };
+});
+
+const EMPTY_TABLES: Tables = {};
+const NEW_QUERY: QueryDraft = {
+  code: STARTER_CODE.sql,
+  display: "bar",
+  format: "auto",
+  language: "sql",
+  title: "",
+};
 
 interface BreakdownEntry {
   cost: number;
@@ -70,6 +106,8 @@ export interface ViewData {
   range?: TimeRange;
   sessions?: SessionSummary[];
   sessionsTitle?: string;
+  /** Data exposed to query widgets; omit to disable them on a view. */
+  query?: QuerySource;
   slots?: Partial<Record<SlotId, React.ReactNode>>;
   stats?: React.ReactNode;
 }
@@ -85,6 +123,7 @@ const capabilitiesOf = (data: ViewData): ViewCapabilities => ({
   dimensions: DIMENSIONS.map((item) => item.id).filter(
     (dimension) => data.breakdowns[dimension] !== undefined
   ),
+  queries: data.query !== undefined,
   sessions: data.sessions !== undefined,
   slots: SLOT_IDS.filter((slot) => data.slots?.[slot] !== undefined),
   stats: data.stats !== undefined,
@@ -114,6 +153,9 @@ export const widgetTitle = (widget: Widget, data?: ViewData): string => {
     }
     case "slot": {
       return SLOT_LABELS[widget.slot];
+    }
+    case "query": {
+      return "Query";
     }
     default: {
       return "Widget";
@@ -148,10 +190,12 @@ const useViewLayout = (
 const WidgetContent = ({
   data,
   onChange,
+  queryTables,
   widget,
 }: {
   data: ViewData;
   onChange: (changes: Partial<Widget>) => void;
+  queryTables: Tables;
   widget: Widget;
 }) => {
   const setMetric = (metric: ChartMetric): void => onChange({ metric });
@@ -196,6 +240,17 @@ const WidgetContent = ({
     }
     case "slot": {
       return data.slots?.[widget.slot] ?? null;
+    }
+    case "query": {
+      return (
+        <Suspense fallback={<Skeleton className="h-72 rounded-xl" />}>
+          <QueryWidget
+            widget={widget}
+            tables={queryTables}
+            onChange={(draft) => onChange(draft)}
+          />
+        </Suspense>
+      );
     }
     default: {
       return null;
@@ -243,6 +298,34 @@ const ChartOptions = ({
             options={METRIC_OPTIONS}
             value={widget.metric}
             onChange={(metric) => onChange({ metric })}
+          />
+        </Field>
+      </>
+    );
+  }
+  if (widget.kind === "query") {
+    return (
+      <>
+        <Field label="Display">
+          <SegmentedControl
+            label="Display"
+            options={RESULT_DISPLAYS.map((option) => ({
+              label: option.label,
+              value: option.id,
+            }))}
+            value={widget.display}
+            onChange={(display) => onChange({ display })}
+          />
+        </Field>
+        <Field label="Number format">
+          <SegmentedControl
+            label="Number format"
+            options={VALUE_FORMATS.map((option) => ({
+              label: option.label,
+              value: option.id,
+            }))}
+            value={widget.format}
+            onChange={(format) => onChange({ format })}
           />
         </Field>
       </>
@@ -504,11 +587,13 @@ const AddWidgetMenu = ({
   capabilities,
   onAdd,
   onBuild,
+  onWriteQuery,
   present,
 }: {
   capabilities: ViewCapabilities;
   onAdd: (widget: Widget) => void;
   onBuild: () => void;
+  onWriteQuery: () => void;
   present: Set<string>;
 }) => {
   const available = widgetTemplates(capabilities).filter(
@@ -524,6 +609,15 @@ const AddWidgetMenu = ({
       <Popover.Portal>
         <Popover.Positioner sideOffset={8} align="end" className="z-50">
           <Popover.Popup className="w-64 rounded-xl border bg-popover p-1.5 text-popover-foreground shadow-xl transition data-[ending-style]:scale-95 data-[ending-style]:opacity-0 data-[starting-style]:scale-95 data-[starting-style]:opacity-0">
+            {capabilities.queries && (
+              <Popover.Close
+                onClick={onWriteQuery}
+                className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-sm font-medium text-primary transition hover:bg-muted"
+              >
+                <Code2 className="size-4" />
+                Write a query (SQL, TS, JS)…
+              </Popover.Close>
+            )}
             {canBuild && (
               <Popover.Close
                 onClick={onBuild}
@@ -680,6 +774,22 @@ export const CustomizableView = ({
   const [widgets, changeWidgets] = useViewLayout(view);
   const [editing, setEditing] = useState(false);
   const [builderOpen, setBuilderOpen] = useState(false);
+  const [queryEditorOpen, setQueryEditorOpen] = useState(false);
+  const { query } = data;
+  // Stable per underlying arrays, so query results stay cached across
+  // renders that rebuild the view's data object.
+  const queryTables = useMemo(
+    () => (query ? buildTables({ ...query }) : EMPTY_TABLES),
+    // oxlint-disable-next-line react-hooks/exhaustive-deps -- keyed on the arrays themselves
+    [
+      query?.agents,
+      query?.daily,
+      query?.hourly,
+      query?.models,
+      query?.projects,
+      query?.sessions,
+    ]
+  );
   const [draggedId, setDraggedId] = useState<string>();
   const capabilities = capabilitiesOf(data);
   const visible = widgets.filter((widget) =>
@@ -721,6 +831,7 @@ export const CustomizableView = ({
         present={present}
         onAdd={(widget) => add(widget, widget.id)}
         onBuild={() => setBuilderOpen(true)}
+        onWriteQuery={() => setQueryEditorOpen(true)}
       />
       <button
         type="button"
@@ -771,6 +882,7 @@ export const CustomizableView = ({
           const content = (
             <WidgetContent
               data={data}
+              queryTables={queryTables}
               widget={widget}
               onChange={(changes) => update(widget.id, changes)}
             />
@@ -842,6 +954,20 @@ export const CustomizableView = ({
         onOpenChange={setBuilderOpen}
         onAdd={(widget) => add(widget)}
       />
+      {capabilities.queries && queryEditorOpen && (
+        <Suspense fallback={null}>
+          <QueryEditorDialog
+            mode="create"
+            open={queryEditorOpen}
+            onOpenChange={setQueryEditorOpen}
+            tables={queryTables}
+            initial={NEW_QUERY}
+            onSave={(draft) =>
+              add({ ...draft, kind: "query", size: "md" }, "query")
+            }
+          />
+        </Suspense>
+      )}
     </>
   );
 };

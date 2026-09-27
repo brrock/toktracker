@@ -70,6 +70,7 @@ export const ProjectsPage = ({
       data={{
         breakdowns: { project: projects },
         periodLabel: "All time",
+        query: { projects: data.projects, sessions: data.recentSessions },
         slots: {
           "project-cards": <ProjectCards projects={projects} query={query} />,
         },
@@ -102,6 +103,12 @@ export const ProjectPage = ({ data }: { data: DashboardSummary }) => {
         breakdowns: { agent: detail.agents, model: detail.models },
         daily: detail.daily,
         periodLabel: "All time",
+        query: {
+          agents: detail.agents,
+          daily: detail.daily,
+          models: detail.models,
+          sessions,
+        },
         sessions,
         sessionsTitle: "Project sessions",
         stats: (

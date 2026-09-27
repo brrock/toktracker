@@ -72,6 +72,7 @@ describe("moveWidget", () => {
 describe("capabilities", () => {
   const agentView: ViewCapabilities = {
     dimensions: ["model", "project"],
+    queries: false,
     sessions: false,
     slots: [],
     stats: true,

@@ -27,6 +27,11 @@ export const ModelPage = ({ data }: { data: DashboardSummary }) => {
         breakdowns: { agent: detail.agents, project: detail.projects },
         daily: detail.daily,
         periodLabel: "All time",
+        query: {
+          agents: detail.agents,
+          daily: detail.daily,
+          projects: detail.projects,
+        },
         stats: (
           <section className="grid gap-4 sm:grid-cols-2">
             <Stat

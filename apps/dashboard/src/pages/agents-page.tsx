@@ -74,6 +74,7 @@ export const AgentsPage = ({
       data={{
         breakdowns: { agent: agents },
         periodLabel: "All time",
+        query: { agents: data.agents, sessions: data.recentSessions },
         slots: {
           "agent-cards": (
             <AgentCards agents={agents} totalTokens={totalTokens} />
@@ -105,6 +106,11 @@ export const AgentPage = ({ data }: { data: DashboardSummary }) => {
         breakdowns: { model: detail.models, project: detail.projects },
         daily: detail.daily,
         periodLabel: "All time",
+        query: {
+          daily: detail.daily,
+          models: detail.models,
+          projects: detail.projects,
+        },
         stats: (
           <section className="grid gap-4 sm:grid-cols-2">
             <Stat

@@ -102,6 +102,7 @@ export const SessionsPage = ({
           project: groupUsage(sessions, (session) => session.project),
         },
         periodLabel: `${sessions.length} loaded sessions`,
+        query: { sessions: allSessions },
         slots: {
           "sessions-table": loading ? (
             <EmptyState>Loading sessions…</EmptyState>

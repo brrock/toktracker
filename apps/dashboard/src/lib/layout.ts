@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { writeStorage } from "@/lib/appearance";
+import { QUERY_LIMITS } from "@/lib/query/contract";
 
 const LAYOUT_STORAGE_PREFIX = "toktracker-layout:";
 export const LAYOUT_CHANGE_EVENT = "toktracker-layout-change";
@@ -37,6 +38,22 @@ export const TIMELINE_STYLES = [
   { id: "area", label: "Area" },
   { id: "line", label: "Line" },
 ] as const;
+export const RESULT_DISPLAYS = [
+  { id: "table", label: "Table" },
+  { id: "bar", label: "Bars" },
+  { id: "line", label: "Line" },
+  { id: "area", label: "Area" },
+  { id: "donut", label: "Donut" },
+  { id: "stat", label: "Number" },
+] as const;
+export const VALUE_FORMATS = [
+  { id: "auto", label: "Auto" },
+  { id: "number", label: "1,234" },
+  { id: "compact", label: "1.2K" },
+  { id: "currency", label: "$" },
+  { id: "percent", label: "%" },
+] as const;
+export type ValueFormat = (typeof VALUE_FORMATS)[number]["id"];
 export const BREAKDOWN_STYLES = [
   { id: "bars", label: "Bars" },
   { id: "donut", label: "Donut" },
@@ -86,6 +103,14 @@ export const widgetSchema = z.discriminatedUnion("kind", [
   }),
   z.object({
     ...baseWidget,
+    code: z.string().max(QUERY_LIMITS.codeLength),
+    display: z.enum(["table", "bar", "line", "area", "donut", "stat"]),
+    format: z.enum(["auto", "number", "compact", "currency", "percent"]),
+    kind: z.literal("query"),
+    language: z.enum(["sql", "typescript", "javascript"]),
+  }),
+  z.object({
+    ...baseWidget,
     kind: z.literal("slot"),
     slot: z.enum(SLOT_IDS),
   }),
@@ -105,6 +130,7 @@ const storedLayoutSchema = z.object({
 /** What a view can render; widgets needing anything else are dropped. */
 export interface ViewCapabilities {
   dimensions: readonly Dimension[];
+  queries: boolean;
   sessions: boolean;
   slots: readonly SlotId[];
   stats: boolean;
@@ -130,6 +156,9 @@ export const isWidgetSupported = (
     }
     case "slot": {
       return capabilities.slots.includes(widget.slot);
+    }
+    case "query": {
+      return capabilities.queries;
     }
     default: {
       return false;
