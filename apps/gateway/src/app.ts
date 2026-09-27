@@ -292,10 +292,9 @@ export const createApp = (
   });
   // Dashboard query widgets run user-written code in a dedicated worker
   // loaded from /sandbox/. A worker takes its CSP from its own script
-  // response, so this policy lets that worker evaluate code and compile
-  // SQLite's WebAssembly while forbidding every network request (so it
-  // cannot use the dashboard session) and every other resource. The main
-  // page keeps the strict policy above.
+  // response, so this policy lets that worker evaluate code while forbidding
+  // every network request (so it cannot use the dashboard session) and every
+  // other resource. The main page keeps the strict policy above.
   const sandboxHeaders = secureHeaders({
     contentSecurityPolicy: {
       baseUri: ["'none'"],
@@ -303,7 +302,7 @@ export const createApp = (
       defaultSrc: ["'none'"],
       formAction: ["'none'"],
       frameAncestors: ["'none'"],
-      scriptSrc: ["'self'", "'unsafe-eval'", "'wasm-unsafe-eval'"],
+      scriptSrc: ["'self'", "'unsafe-eval'"],
       workerSrc: ["'none'"],
     },
     permissionsPolicy: SECURE_PERMISSIONS_POLICY,

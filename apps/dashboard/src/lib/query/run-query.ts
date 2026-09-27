@@ -1,5 +1,3 @@
-import sqliteWasmUrl from "sql.js/dist/sql-wasm-browser.wasm?url";
-
 import { QUERY_LIMITS, queryResponseSchema } from "./contract";
 import type {
   QueryLanguage,
@@ -11,11 +9,6 @@ import type {
 const MAX_CONCURRENT_RUNS = 2;
 const CACHE_ENTRIES = 48;
 
-let wasmBytes: Promise<ArrayBuffer> | undefined;
-// Compiled once inside a sandbox worker, then handed to later workers so
-// SQLite does not recompile on every run. The main page never compiles or
-// instantiates it (its CSP forbids that).
-let wasmModule: WebAssembly.Module | undefined;
 const cache = new Map<string, QueryResponse>();
 // Tables are memoised per view data, so their identity names a dataset.
 const datasetIds = new WeakMap<Tables, number>();
@@ -60,22 +53,6 @@ const releaseSlot = (): void => {
   waiting.shift()?.();
 };
 
-const fetchWasm = async (): Promise<ArrayBuffer> => {
-  const response = await fetch(sqliteWasmUrl);
-  if (!response.ok) {
-    throw new Error("Could not load SQLite.");
-  }
-  return response.arrayBuffer();
-};
-
-const loadWasm = (): Promise<ArrayBuffer | WebAssembly.Module> => {
-  if (wasmModule) {
-    return Promise.resolve(wasmModule);
-  }
-  wasmBytes ??= fetchWasm();
-  return wasmBytes;
-};
-
 const failure = (runId: string, error: string): QueryResponse => ({
   error,
   ok: false,
@@ -84,18 +61,8 @@ const failure = (runId: string, error: string): QueryResponse => ({
 
 // Every response is re-validated here: the worker runs untrusted code, so
 // nothing it sends is trusted until it matches the schema exactly.
-const parseResponse = (
-  runId: string,
-  language: QueryLanguage,
-  message: MessageEvent
-): QueryResponse => {
-  const envelope: { module?: WebAssembly.Module; response?: QueryResponse } =
-    message.data ?? {};
-  // Only SQL runs compile SQLite; a module from any other run is ignored so
-  // script code can never plant one for later SQL workers.
-  if (language === "sql" && envelope.module instanceof WebAssembly.Module) {
-    wasmModule ??= envelope.module;
-  }
+const parseResponse = (runId: string, message: MessageEvent): QueryResponse => {
+  const envelope: { response?: QueryResponse } = message.data ?? {};
   const parsed = queryResponseSchema.safeParse(envelope.response);
   if (!parsed.success || parsed.data.runId !== runId) {
     return failure(runId, "The query returned a malformed result.");
@@ -107,13 +74,12 @@ const parseResponse = (
   return data;
 };
 
-const execute = async (
-  request: Omit<QueryRequest, "runId" | "wasm">,
+const execute = (
+  request: Omit<QueryRequest, "runId">,
   signal?: AbortSignal
 ): Promise<QueryResponse> => {
   runCounter += 1;
   const runId = `run-${runCounter}`;
-  const wasm = request.language === "sql" ? await loadWasm() : undefined;
   // oxlint-disable-next-line promise/avoid-new -- Worker results arrive as events
   return new Promise<QueryResponse>((resolve) => {
     const worker = new Worker(new URL("query.worker.ts", import.meta.url), {
@@ -149,7 +115,7 @@ const execute = async (
       }
     );
     worker.addEventListener("message", (message) =>
-      finish(parseResponse(runId, request.language, message))
+      finish(parseResponse(runId, message))
     );
     worker.addEventListener("error", (event) => {
       event.preventDefault();
@@ -161,7 +127,7 @@ const execute = async (
       finish(failure(runId, "The query returned a result that cannot be read."))
     );
     // oxlint-disable-next-line unicorn/require-post-message-target-origin -- Worker.postMessage has no target origin
-    worker.postMessage({ ...request, runId, wasm });
+    worker.postMessage({ ...request, runId });
   });
 };
 

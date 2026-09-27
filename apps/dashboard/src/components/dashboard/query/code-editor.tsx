@@ -1,24 +1,47 @@
-import { autocompletion } from "@codemirror/autocomplete";
+import {
+  autocompletion,
+  closeBrackets,
+  closeBracketsKeymap,
+  completionKeymap,
+} from "@codemirror/autocomplete";
 import type {
   Completion,
   CompletionContext,
   CompletionResult,
 } from "@codemirror/autocomplete";
-import { indentWithTab } from "@codemirror/commands";
+import {
+  defaultKeymap,
+  history,
+  historyKeymap,
+  indentWithTab,
+} from "@codemirror/commands";
 import { javascript } from "@codemirror/lang-javascript";
-import { SQLite, sql } from "@codemirror/lang-sql";
-import { HighlightStyle, syntaxHighlighting } from "@codemirror/language";
+import { sql, SQLDialect } from "@codemirror/lang-sql";
+import {
+  bracketMatching,
+  HighlightStyle,
+  indentOnInput,
+  syntaxHighlighting,
+} from "@codemirror/language";
 import { lintGutter, setDiagnostics } from "@codemirror/lint";
 import { Compartment, EditorState } from "@codemirror/state";
-import { EditorView, hoverTooltip, keymap } from "@codemirror/view";
+import {
+  drawSelection,
+  EditorView,
+  highlightActiveLine,
+  highlightActiveLineGutter,
+  hoverTooltip,
+  keymap,
+  lineNumbers,
+} from "@codemirror/view";
 import { tags } from "@lezer/highlight";
-import { basicSetup } from "codemirror";
 import { useEffect, useRef } from "react";
 
 import {
   availableTables,
   HELPERS,
   JS_GLOBALS,
+  SQL_FUNCTIONS,
   TABLES,
 } from "@/lib/query/contract";
 import type { QueryLanguage, Tables } from "@/lib/query/contract";
@@ -156,18 +179,52 @@ const sqlColumnCompletions =
     }
     return {
       from: word.from,
-      options: columnCompletions(tables).map((option) => ({
-        ...option,
-        boost: 2,
-      })),
+      options: [
+        ...columnCompletions(tables).map((option) => ({ ...option, boost: 2 })),
+        ...SQL_FUNCTIONS.map((doc) => ({
+          apply: `${doc.name}(`,
+          boost: 1,
+          detail: doc.signature.slice(doc.name.length),
+          info: () => docNode(doc.signature, doc.description, doc.example),
+          label: doc.name,
+          type: "function",
+        })),
+      ],
       validFor: /^[\w]*$/u,
     };
   };
 
+// Only what TokTracker SQL (lib/query/sql.ts) understands is highlighted
+// and suggested.
+const TOKTRACKER_SQL = SQLDialect.define({
+  builtin: SQL_FUNCTIONS.map((doc) => doc.name.toLowerCase()).join(" "),
+  keywords:
+    "select distinct all from where group by having order asc desc limit offset as and or not is null like in between case when then else end true false cast nulls first last",
+  types: "integer real text",
+});
+
+// The pieces of CodeMirror's basic setup a query editor needs.
+const editorSetup = [
+  lineNumbers(),
+  highlightActiveLineGutter(),
+  history(),
+  drawSelection(),
+  indentOnInput(),
+  bracketMatching(),
+  closeBrackets(),
+  highlightActiveLine(),
+  keymap.of([
+    ...closeBracketsKeymap,
+    ...defaultKeymap,
+    ...historyKeymap,
+    ...completionKeymap,
+  ]),
+];
+
 const sqlSupport = (tables: Tables) => {
   const available = availableTables(tables);
   const support = sql({
-    dialect: SQLite,
+    dialect: TOKTRACKER_SQL,
     schema: Object.fromEntries(
       available.map((table) => [
         table.name,
@@ -231,6 +288,9 @@ const hoverDocs = hoverTooltip((view, pos) => {
     item.columns.map((entry) => ({ ...entry, table: item.name }))
   ).find((item) => item.name === word.text);
   const global = JS_GLOBALS.find((item) => item.name === word.text);
+  const sqlFunction = SQL_FUNCTIONS.find(
+    (item) => item.name === word.text.toUpperCase()
+  );
   let node: HTMLElement | undefined;
   if (helper && isHelperCall) {
     node = docNode(
@@ -242,6 +302,12 @@ const hoverDocs = hoverTooltip((view, pos) => {
     node = docNode(
       table.name,
       `${table.description} Columns: ${table.columns.map((item) => item.name).join(", ")}.`
+    );
+  } else if (sqlFunction && view.state.sliceDoc(word.to, word.to + 1) === "(") {
+    node = docNode(
+      sqlFunction.signature,
+      sqlFunction.description,
+      sqlFunction.example
     );
   } else if (global) {
     node = docNode(global.name, global.description);
@@ -370,7 +436,7 @@ export const CodeEditor = ({
       state: EditorState.create({
         doc: value,
         extensions: [
-          basicSetup,
+          editorSetup,
           keymap.of([
             {
               key: "Mod-Enter",

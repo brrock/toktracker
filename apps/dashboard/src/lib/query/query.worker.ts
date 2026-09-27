@@ -15,24 +15,21 @@
  * 4. The main thread terminates the worker after one result or when the
  *    time limit passes, and re-validates every response with a schema
  *    before rendering it as plain text (never HTML).
- * SQL runs in an in-memory SQLite (WebAssembly) holding only the rows the
+ * SQL is interpreted by sql.ts (no eval, no database) over the rows the
  * view already shows; it never reaches the gateway database.
  */
-import { isNumberCell, QUERY_LIMITS, TABLE_NAMES } from "./contract";
+import { TABLE_NAMES } from "./contract";
 import type {
-  Cell,
   QueryRequest,
   QueryResponse,
-  Row,
   TableName,
   Tables,
 } from "./contract";
 import { helpers } from "./helpers";
-import { cellSchema, queryOutputSchema } from "./normalize";
+import { queryOutputSchema } from "./normalize";
 import type { NormalizedResult } from "./normalize";
 
 interface SandboxMessage {
-  module?: WebAssembly.Module;
   response: QueryResponse;
 }
 
@@ -51,10 +48,6 @@ const post = scope.postMessage.bind(scope);
 // Lines the Function constructor and our wrapper add above user code.
 const WRAPPER_LINE_OFFSET = 4;
 const STACK_LINE = /(?:<anonymous>|Function|eval)[^:]*:(?<line>\d+):\d+/u;
-const SUCRASE_LINE = /\((?<line>\d+):\d+\)/u;
-// SQLite names the offending token in these messages; find it in the code.
-const SQL_TOKEN =
-  /near "(?<near>[^"]+)"|no such (?:column|table|function): (?<name>[\w.]+)/u;
 const MAX_ERROR_LENGTH = 2000;
 const TABLE_NAME_SET = new Set<string>(TABLE_NAMES);
 
@@ -120,137 +113,49 @@ const lockDown = (): void => {
   }
 };
 
+// Our own parse errors carry friendlier labels than their class names.
+const ERROR_LABELS = new Map([
+  ["QuerySyntaxError", "SyntaxError"],
+  ["SqlError", "SQL error"],
+]);
+
 const errorMessage = (error: Error): string =>
-  `${error.name}: ${error.message}`.slice(0, MAX_ERROR_LENGTH);
+  `${ERROR_LABELS.get(error.name) ?? error.name}: ${error.message}`.slice(
+    0,
+    MAX_ERROR_LENGTH
+  );
 
+/** The user's line for an error thrown while running script code. */
 const userLine = (error: Error, code: string): number | undefined => {
-  const sucrase = SUCRASE_LINE.exec(error.message)?.groups?.line;
+  if ("line" in error && Number.isInteger(error.line)) {
+    return Number(error.line);
+  }
   const stack = STACK_LINE.exec(error.stack ?? "")?.groups?.line;
-  let line: number | undefined;
-  if (sucrase) {
-    line = Number(sucrase) - 1;
-  } else if (stack) {
-    line = Number(stack) - WRAPPER_LINE_OFFSET;
-  }
-  const lines = code.split("\n").length;
-  return line && line >= 1 && line <= lines ? line : undefined;
-};
-
-const sqlErrorLine = (error: Error, code: string): number | undefined => {
-  const groups = SQL_TOKEN.exec(error.message)?.groups;
-  const token = groups?.near ?? groups?.name;
-  if (!token) {
-    return undefined;
-  }
-  const index = code.indexOf(token);
-  return index === -1 ? undefined : code.slice(0, index).split("\n").length;
+  const line = stack ? Number(stack) - WRAPPER_LINE_OFFSET : undefined;
+  return line && line >= 1 && line <= code.split("\n").length
+    ? line
+    : undefined;
 };
 
 const runScript = async (request: QueryRequest): Promise<NormalizedResult> => {
-  const { transform } = await import("sucrase");
-  // Parsing with Sucrase first gives syntax errors a line number and strips
-  // TypeScript types. The wrapper makes top-level `return` and `await` work.
-  const wrapped = `(async (data, tt) => {\n${request.code}\n})`;
-  const compiled = transform(wrapped, {
-    disableESTransforms: true,
-    transforms: request.language === "typescript" ? ["typescript"] : [],
-  }).code;
+  const { toJavaScript } = await import("./strip-types");
+  // Syntax is checked (and TypeScript types removed) before anything runs;
+  // the wrapper makes top-level `return` and `await` work.
+  const script = toJavaScript(request.code, request.language === "typescript");
   lockDown();
   // oxlint-disable-next-line typescript/no-implied-eval, no-new-func -- evaluating user code is this sandbox's purpose; see the file header.
-  const factory = new Function(`"use strict";\nreturn ${compiled};`);
+  const factory = new Function(
+    `"use strict";\nreturn (async (data, tt) => {\n${script}\n});`
+  );
   const query = factory();
   const output = await query(Object.freeze({ ...request.tables }), helpers);
   return queryOutputSchema.parse(output);
 };
 
-const sqlType = (rows: readonly Row[], column: string): string => {
-  const sample = rows.find((row) => row[column] !== null)?.[column];
-  if (isNumberCell(sample)) {
-    return Number.isInteger(sample) ? "INTEGER" : "REAL";
-  }
-  return "TEXT";
-};
-
-const sqlValue = (cell: Cell | undefined): string | number | null => {
-  if (cell === true || cell === false) {
-    return Number(cell);
-  }
-  return cell ?? null;
-};
-
-const quoteIdentifier = (name: string): string =>
-  `"${name.replaceAll('"', '""')}"`;
-
-const loadSqlite = async (source: ArrayBuffer | WebAssembly.Module) => {
-  const { default: initSqlJs } = await import("sql.js");
-  const module =
-    source instanceof WebAssembly.Module
-      ? source
-      : await WebAssembly.compile(source);
-  const SQL = await initSqlJs({
-    instantiateWasm: (imports, done) => {
-      const instantiate = async (): Promise<void> => {
-        done(await WebAssembly.instantiate(module, imports));
-      };
-      instantiate();
-      return {};
-    },
-  });
-  return { SQL, module };
-};
-
-const runSql = async (
-  request: QueryRequest
-): Promise<{ module: WebAssembly.Module; result: NormalizedResult }> => {
-  if (!request.wasm) {
-    throw new Error("SQLite is unavailable in this browser.");
-  }
-  const { module, SQL } = await loadSqlite(request.wasm);
-  const database = new SQL.Database();
-  try {
-    database.run("BEGIN");
-    for (const [name, rows] of Object.entries(request.tables)) {
-      const table = quoteIdentifier(name);
-      const columns = Object.keys(rows[0] ?? {});
-      if (!columns.length) {
-        database.run(`CREATE TABLE ${table} (placeholder TEXT)`);
-        continue;
-      }
-      const definitions = columns
-        .map((column) => `${quoteIdentifier(column)} ${sqlType(rows, column)}`)
-        .join(", ");
-      database.run(`CREATE TABLE ${table} (${definitions})`);
-      const insert = database.prepare(
-        `INSERT INTO ${table} VALUES (${columns.map(() => "?").join(", ")})`
-      );
-      for (const row of rows) {
-        insert.run(columns.map((column) => sqlValue(row[column])));
-      }
-      insert.free();
-    }
-    database.run("COMMIT");
-    lockDown();
-    let result: NormalizedResult = { columns: [], rows: [], truncated: false };
-    for (const statement of database.iterateStatements(request.code)) {
-      const columns = statement.getColumnNames();
-      const rows: Cell[][] = [];
-      let truncated = false;
-      while (statement.step()) {
-        if (rows.length === QUERY_LIMITS.rows) {
-          truncated = true;
-          break;
-        }
-        rows.push(statement.get().map((value) => cellSchema.parse(value)));
-      }
-      if (columns.length) {
-        result = { ...queryOutputSchema.parse({ columns, rows }), truncated };
-      }
-      statement.free();
-    }
-    return { module, result };
-  } finally {
-    database.close();
-  }
+const runSql = async (request: QueryRequest): Promise<NormalizedResult> => {
+  const { executeSql } = await import("./sql/execute");
+  lockDown();
+  return executeSql(request.code, request.tables);
 };
 
 const isTableName = (name: string): name is TableName =>
@@ -265,12 +170,11 @@ const handle = async (request: QueryRequest): Promise<void> => {
   const started = performance.now();
   const scoped = { ...request, tables: knownTables(request.tables) };
   try {
-    const { module, result } =
+    const result =
       request.language === "sql"
         ? await runSql(scoped)
-        : { module: undefined, result: await runScript(scoped) };
+        : await runScript(scoped);
     post({
-      module,
       response: {
         ...result,
         durationMs: performance.now() - started,
@@ -282,13 +186,8 @@ const handle = async (request: QueryRequest): Promise<void> => {
     const reason = error instanceof Error ? error : new Error(String(error));
     post({
       response: {
-        // Sucrase reports positions in the wrapped source; `line` below
-        // carries the user's line instead.
-        error: errorMessage(reason).replace(SUCRASE_LINE, "").trim(),
-        line:
-          request.language === "sql"
-            ? sqlErrorLine(reason, request.code)
-            : userLine(reason, request.code),
+        error: errorMessage(reason),
+        line: userLine(reason, request.code),
         ok: false,
         runId: request.runId,
       },

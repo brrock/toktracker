@@ -26,6 +26,8 @@ import {
   HELPERS,
   QUERY_LANGUAGES,
   QUERY_LIMITS,
+  SQL_FUNCTIONS,
+  SQL_SYNTAX,
   STARTER_CODE,
 } from "@/lib/query/contract";
 import type {
@@ -72,7 +74,7 @@ const Reference = ({
       </h4>
       <p className="mt-1 text-xs text-muted-foreground">
         {language === "sql"
-          ? "Each is a table in an in-memory SQLite database."
+          ? "Query them with SELECT … FROM <table>."
           : "Each is an array of objects on `data`, e.g. `data.sessions`."}
       </p>
       <div className="mt-3 space-y-3">
@@ -108,28 +110,20 @@ const Reference = ({
     {language === "sql" ? (
       <section>
         <h4 className="text-2xs font-semibold uppercase tracking-caps text-muted-foreground">
-          SQLite tips
+          TokTracker SQL
         </h4>
-        <ul className="mt-2 space-y-1.5 text-xs text-muted-foreground">
-          <li>
-            <code className="font-mono text-foreground">
-              strftime(&apos;%Y-%W&apos;, date)
-            </code>{" "}
-            buckets days into weeks.
-          </li>
-          <li>
-            <code className="font-mono text-foreground">
-              substr(hour, 12, 2)
-            </code>{" "}
-            extracts the hour of day.
-          </li>
-          <li>
-            <code className="font-mono text-foreground">
-              ROUND(SUM(cost), 2)
-            </code>{" "}
-            totals spend to the cent.
-          </li>
-          <li>The last statement that returns rows is shown.</li>
+        <p className="mt-2 text-xs text-muted-foreground">{SQL_SYNTAX}</p>
+        <ul className="mt-3 space-y-2.5">
+          {SQL_FUNCTIONS.map((doc) => (
+            <li key={doc.name}>
+              <code className="block font-mono text-xs font-semibold text-primary">
+                {doc.signature}
+              </code>
+              <p className="mt-0.5 text-xs text-muted-foreground">
+                {doc.description}
+              </p>
+            </li>
+          ))}
         </ul>
       </section>
     ) : (

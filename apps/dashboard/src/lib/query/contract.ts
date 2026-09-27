@@ -241,6 +241,181 @@ export const HELPERS: readonly HelperDoc[] = [
   },
 ];
 
+/** Functions TokTracker SQL supports (see sql.ts). */
+export const SQL_FUNCTIONS: readonly HelperDoc[] = [
+  {
+    description: "Number of rows, or of non-null values.",
+    example: "COUNT(*), COUNT(DISTINCT project)",
+    name: "COUNT",
+    signature: "COUNT(* | [DISTINCT] x)",
+  },
+  {
+    description: "Sum of non-null values (NULL when there are none).",
+    example: "SUM(cost)",
+    name: "SUM",
+    signature: "SUM([DISTINCT] x)",
+  },
+  {
+    description: "Sum of non-null values, 0 when there are none.",
+    example: "TOTAL(tokens)",
+    name: "TOTAL",
+    signature: "TOTAL(x)",
+  },
+  {
+    description: "Average of non-null values.",
+    example: "AVG(cost)",
+    name: "AVG",
+    signature: "AVG([DISTINCT] x)",
+  },
+  {
+    description:
+      "Smallest value; with two or more arguments, the smallest argument.",
+    example: "MIN(date)",
+    name: "MIN",
+    signature: "MIN(x, …)",
+  },
+  {
+    description:
+      "Largest value; with two or more arguments, the largest argument.",
+    example: "MAX(cost)",
+    name: "MAX",
+    signature: "MAX(x, …)",
+  },
+  {
+    description: "Join a group's values into one string.",
+    example: "GROUP_CONCAT(agent, ', ')",
+    name: "GROUP_CONCAT",
+    signature: "GROUP_CONCAT(x, separator = ',')",
+  },
+  {
+    description: "Round to a number of decimal places.",
+    example: "ROUND(SUM(cost), 2)",
+    name: "ROUND",
+    signature: "ROUND(x, digits = 0)",
+  },
+  {
+    description: "Absolute value.",
+    example: "ABS(x)",
+    name: "ABS",
+    signature: "ABS(x)",
+  },
+  {
+    description: "Round up to a whole number.",
+    example: "CEIL(tokens / 1000.0)",
+    name: "CEIL",
+    signature: "CEIL(x)",
+  },
+  {
+    description: "Round down to a whole number.",
+    example: "FLOOR(cost)",
+    name: "FLOOR",
+    signature: "FLOOR(x)",
+  },
+  {
+    description: "Lower-case text.",
+    example: "LOWER(agent)",
+    name: "LOWER",
+    signature: "LOWER(text)",
+  },
+  {
+    description: "Upper-case text.",
+    example: "UPPER(agent)",
+    name: "UPPER",
+    signature: "UPPER(text)",
+  },
+  {
+    description: "Number of characters.",
+    example: "LENGTH(title)",
+    name: "LENGTH",
+    signature: "LENGTH(text)",
+  },
+  {
+    description: "Remove surrounding whitespace.",
+    example: "TRIM(title)",
+    name: "TRIM",
+    signature: "TRIM(text)",
+  },
+  {
+    description: "Part of a text, starting at 1.",
+    example: "SUBSTR(hour, 12, 2)",
+    name: "SUBSTR",
+    signature: "SUBSTR(text, start, length?)",
+  },
+  {
+    description: "Replace every occurrence of a text.",
+    example: "REPLACE(model, 'claude-', '')",
+    name: "REPLACE",
+    signature: "REPLACE(text, find, with)",
+  },
+  {
+    description: "Position of a text inside another (1-based, 0 if absent).",
+    example: "INSTR(model, 'sonnet')",
+    name: "INSTR",
+    signature: "INSTR(text, find)",
+  },
+  {
+    description: "First argument that is not NULL.",
+    example: "COALESCE(title, id)",
+    name: "COALESCE",
+    signature: "COALESCE(x, …)",
+  },
+  {
+    description: "The second argument when the first is NULL.",
+    example: "IFNULL(cost, 0)",
+    name: "IFNULL",
+    signature: "IFNULL(x, fallback)",
+  },
+  {
+    description:
+      "NULL when both arguments are equal (avoids dividing by zero).",
+    example: "cost / NULLIF(tokens, 0)",
+    name: "NULLIF",
+    signature: "NULLIF(x, y)",
+  },
+  {
+    description: "Inline if.",
+    example: "IIF(cost > 1, 'big', 'small')",
+    name: "IIF",
+    signature: "IIF(condition, then, else)",
+  },
+  {
+    description: "The YYYY-MM-DD date of a date or timestamp.",
+    example: "DATE(last_seen)",
+    name: "DATE",
+    signature: "DATE(x)",
+  },
+  {
+    description:
+      "Format a date: %Y %m %d %H %M %S %W (week of year) %w (weekday) %j (day of year).",
+    example: "STRFTIME('%Y-%m', date)",
+    name: "STRFTIME",
+    signature: "STRFTIME(format, x)",
+  },
+  {
+    description: "Monday of the ISO week, as YYYY-MM-DD (same as tt.week).",
+    example: "WEEK(date)",
+    name: "WEEK",
+    signature: "WEEK(x)",
+  },
+  {
+    description: "Month as YYYY-MM (same as tt.month).",
+    example: "MONTH(date)",
+    name: "MONTH",
+    signature: "MONTH(x)",
+  },
+  {
+    description: "Convert a value.",
+    example: "CAST(tokens AS REAL)",
+    name: "CAST",
+    signature: "CAST(x AS INTEGER | REAL | TEXT)",
+  },
+];
+
+export const SQL_SYNTAX =
+  "SELECT [DISTINCT] … FROM table [WHERE …] [GROUP BY …] [HAVING …] [ORDER BY … ASC|DESC] [LIMIT n [OFFSET m]]. " +
+  "Operators: + - * / % || = != < <= > >= AND OR NOT, IS [NOT] NULL, [NOT] LIKE, [NOT] IN (…), [NOT] BETWEEN … AND …, CASE WHEN … THEN … ELSE … END. " +
+  "One statement, one table (no joins, subqueries or CTEs). Division is always decimal.";
+
 export const JS_GLOBALS = [
   {
     description: `Every table this view provides, as arrays of plain objects: ${TABLE_NAMES.map(
@@ -272,8 +447,6 @@ export interface QueryRequest {
   language: QueryLanguage;
   runId: string;
   tables: Tables;
-  /** SQLite's WebAssembly: raw bytes the first time, then the compiled module. */
-  wasm?: ArrayBuffer | WebAssembly.Module;
 }
 
 const cellSchema = z.union([
@@ -339,9 +512,8 @@ return tt.rollup(data.sessions, "agent", {
   sessions: "count",
 });
 `,
-  sql: `-- Every table this view provides is loaded into an in-memory SQLite
--- database. The first text column labels the chart; numeric columns are
--- plotted.
+  sql: `-- Query this view's tables with a small SQL dialect (see Reference).
+-- The first text column labels the chart; numeric columns are plotted.
 SELECT agent, ROUND(SUM(cost), 2) AS cost, COUNT(*) AS sessions
 FROM sessions
 GROUP BY agent

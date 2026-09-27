@@ -7,7 +7,7 @@ import type { Plugin } from "vite";
 
 // Must match the gateway's policy for /sandbox/ (apps/gateway/src/app.ts).
 const SANDBOX_POLICY =
-  "default-src 'none'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+  "default-src 'none'; script-src 'self' 'unsafe-eval'; connect-src 'none'; worker-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
 const SANDBOX_OUTPUT = "sandbox/[name]-[hash].js";
 
 // The dev server has no gateway in front of its worker scripts, so give the
@@ -29,8 +29,7 @@ export default defineConfig({
   build: {
     // The gateway's CSP only allows same-origin fonts, so never inline font
     // subsets as data: URIs.
-    assetsInlineLimit: (file) =>
-      file.endsWith(".woff2") || file.endsWith(".wasm") ? false : undefined,
+    assetsInlineLimit: (file) => (file.endsWith(".woff2") ? false : undefined),
   },
   clearScreen: false,
   plugins: [react(), tailwindcss(), sandboxPolicyInDevelopment()],

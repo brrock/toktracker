@@ -176,9 +176,8 @@ describe("gateway API", () => {
       expect(worker.status).toBe(200);
       expect(workerPolicy).toContain("default-src 'none'");
       expect(workerPolicy).toContain("connect-src 'none'");
-      expect(workerPolicy).toContain(
-        "script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'"
-      );
+      expect(workerPolicy).toContain("script-src 'self' 'unsafe-eval'");
+      expect(workerPolicy).not.toContain("wasm");
 
       // The app shell must never be served under the eval-permitting policy.
       const missing = await app.request("/sandbox/missing.js");

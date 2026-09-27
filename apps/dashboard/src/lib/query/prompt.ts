@@ -4,6 +4,8 @@ import {
   HELPERS,
   QUERY_LANGUAGES,
   QUERY_LIMITS,
+  SQL_FUNCTIONS,
+  SQL_SYNTAX,
   typeDeclarations,
 } from "./contract";
 import type { Cell, QueryLanguage, Tables } from "./contract";
@@ -78,9 +80,15 @@ const schemaSection = (tables: Tables, includeSamples: boolean): string =>
 const languageSection = (language: QueryLanguage, tables: Tables): string => {
   if (language === "sql") {
     return [
-      "Write a single SQLite query (SQLite 3 syntax). Every table above exists in an in-memory database containing only these rows.",
-      "The last statement that returns rows is displayed.",
-      "Dates are TEXT: use `strftime`, `date()` and `substr()` for bucketing.",
+      "Write one query in TokTracker SQL, a small SQLite-like dialect. Use only this syntax:",
+      SQL_SYNTAX,
+      "",
+      "Functions (no others exist):",
+      ...SQL_FUNCTIONS.map(
+        (doc) => `- \`${doc.signature}\` — ${doc.description}`
+      ),
+      "",
+      "Dates are TEXT (YYYY-MM-DD or ISO timestamps): bucket them with WEEK(), MONTH(), DATE() or STRFTIME().",
     ].join("\n");
   }
   const name = language === "typescript" ? "TypeScript" : "JavaScript";

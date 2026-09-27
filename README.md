@@ -131,7 +131,7 @@ Every page has a **Customise** button: drag widgets to reorder them, resize them
 
 **Add widget → Write a query** opens an editor with syntax highlighting, completion and hover docs for every table, column and helper. Results can be shown as a table, bars, line, area, donut or a single number.
 
-- **SQL** runs in an in-memory SQLite database containing the page's tables (`daily`, `hourly`, `agents`, `models`, `projects`, `sessions`, depending on the page).
+- **SQL** is TokTracker SQL, a small built-in dialect (`SELECT … FROM … WHERE … GROUP BY … HAVING … ORDER BY … LIMIT`, aggregates, `CASE`, `LIKE`, `IN`, and date helpers such as `WEEK()` and `STRFTIME()`). It queries the page's tables (`daily`, `hourly`, `agents`, `models`, `projects` and `sessions`, depending on the page) with no database involved.
 - **TypeScript / JavaScript** is the body of an async function that receives `data` (the same tables as arrays) and `tt` (helpers such as `tt.rollup`, `tt.groupBy`, `tt.week`), and returns rows.
 - **Ask an LLM** builds a prompt from your description plus the documented schema. Paste the prompt into any LLM, then paste its reply into the editor; only the code block is kept. Sample rows are left out unless you opt in.
 
@@ -140,7 +140,7 @@ Queries run only in your browser, never on the gateway:
 - **Isolated worker:** each run gets a fresh Web Worker served from `/sandbox/` with its own Content Security Policy (`connect-src 'none'`). Queries cannot make network requests, so they cannot use your dashboard session or send data anywhere.
 - **Capabilities removed:** before user code runs, network, storage and messaging APIs are deleted and core prototypes are frozen.
 - **Strict page policy:** the dashboard page keeps `script-src 'self'` without `eval`.
-- **Copies of view data only:** SQL sees an in-memory copy of the rows the page already shows, never the gateway database.
+- **Copies of view data only:** SQL is interpreted over a copy of the rows the page already shows, never the gateway database, and nothing in it is evaluated as code.
 - **Limits:** a run stops after 4 seconds, and results are capped at 5,000 rows and 50 columns.
 - **Validated output:** every result is checked against a schema and rendered as text, never as HTML.
 
