@@ -10,7 +10,7 @@ const originalExitCode = process.exitCode;
 
 afterEach(() => {
   process.argv = originalArgv;
-  process.exitCode = originalExitCode;
+  process.exitCode = originalExitCode ?? 0;
 });
 
 const captureOutput = async (
