@@ -45,6 +45,10 @@ export const serviceState = (role: ServiceRole): ServiceState => {
       if (text === "active" || text === "activating") {
         return "running";
       }
+      // is-active prints nothing when the user bus is unreachable.
+      if (text === "") {
+        return "unknown";
+      }
       const enabled = commandOutput([
         "systemctl",
         "--user",

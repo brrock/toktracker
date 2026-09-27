@@ -76,8 +76,14 @@ export const printInfo = (message: string): void => {
 export const printStep = (message: string): void => {
   console.log(`${dim(symbols.arrow)} ${message}`);
 };
+// Bun tints everything written via console.error/console.warn red, which
+// would override our own styling, so stderr is written directly.
+const writeError = (line: string): void => {
+  process.stderr.write(`${line}\n`);
+};
+
 export const printWarning = (message: string): void => {
-  console.warn(
+  writeError(
     `${yellow(symbols.warning, process.stderr)} ${yellow(message, process.stderr)}`
   );
 };
@@ -164,12 +170,12 @@ const networkHint = (error: Error): string | undefined => {
 /** Prints an error the way a user expects: one line, a cause, and a hint. */
 export const reportError = (error: Error): number => {
   const stream = process.stderr;
-  console.error(red(`${symbols.error} ${error.message}`, stream));
+  writeError(red(`${symbols.error} ${error.message}`, stream));
   let { cause } = error;
   let rootCause = error;
   while (cause !== undefined) {
     const message = cause instanceof Error ? cause.message : String(cause);
-    console.error(dim(`  caused by: ${message}`, stream));
+    writeError(dim(`  caused by: ${message}`, stream));
     if (!(cause instanceof Error)) {
       break;
     }
@@ -178,12 +184,12 @@ export const reportError = (error: Error): number => {
   }
   const hint = error instanceof CliError ? error.hint : networkHint(rootCause);
   if (hint) {
-    console.error(`\n${hint}`);
+    writeError(`\n${hint}`);
   }
   if (process.env.TOKTRACKER_DEBUG && error.stack) {
-    console.error(dim(`\n${error.stack}`, stream));
+    writeError(dim(`\n${error.stack}`, stream));
   } else if (!(error instanceof CliError)) {
-    console.error(dim("\nSet TOKTRACKER_DEBUG=1 for a stack trace.", stream));
+    writeError(dim("\nSet TOKTRACKER_DEBUG=1 for a stack trace.", stream));
   }
   return error instanceof CliError ? error.exitCode : EXIT_FAILURE;
 };

@@ -23,12 +23,16 @@ const captureOutput = async (
 }> => {
   process.argv = ["bun", `toktracker-${role}`, ...args];
   const log = spyOn(console, "log").mockReturnValue();
-  const error = spyOn(console, "error").mockReturnValue();
+  const errorLines: string[] = [];
+  const error = spyOn(process.stderr, "write").mockImplementation((chunk) => {
+    errorLines.push(String(chunk));
+    return true;
+  });
   try {
     await runCli(role);
     return {
       exitCode: process.exitCode,
-      stderr: error.mock.calls.map((call) => call.join(" ")).join("\n"),
+      stderr: errorLines.join(""),
       stdout: log.mock.calls.map((call) => call.join(" ")).join("\n"),
     };
   } finally {
