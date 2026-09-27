@@ -155,6 +155,48 @@ describe("gateway API", () => {
     }
   });
 
+  test("serves query sandbox workers with a network-free policy", async () => {
+    const store = await testStore();
+    const dashboardDirectory = path.join(
+      resources.at(-1)?.directory ?? "",
+      "dashboard"
+    );
+    await mkdir(path.join(dashboardDirectory, "sandbox"), { recursive: true });
+    await writeFile(path.join(dashboardDirectory, "index.html"), "dashboard");
+    await writeFile(
+      path.join(dashboardDirectory, "sandbox", "query-worker.js"),
+      "self.onmessage = () => {};"
+    );
+    const previousDashboardDirectory = process.env.TOKTRACKER_DASHBOARD_DIR;
+    process.env.TOKTRACKER_DASHBOARD_DIR = dashboardDirectory;
+    try {
+      const app = createApp(store, undefined, false);
+      const worker = await app.request("/sandbox/query-worker.js");
+      const workerPolicy = worker.headers.get("content-security-policy") ?? "";
+      expect(worker.status).toBe(200);
+      expect(workerPolicy).toContain("default-src 'none'");
+      expect(workerPolicy).toContain("connect-src 'none'");
+      expect(workerPolicy).toContain("script-src 'self' 'unsafe-eval'");
+      expect(workerPolicy).not.toContain("wasm");
+
+      // The app shell must never be served under the eval-permitting policy.
+      const missing = await app.request("/sandbox/missing.js");
+      expect(missing.status).toBe(404);
+      expect(await missing.text()).not.toContain("dashboard");
+
+      const page = await app.request("/");
+      const pagePolicy = page.headers.get("content-security-policy") ?? "";
+      expect(pagePolicy).toContain("script-src 'self';");
+      expect(pagePolicy).not.toContain("unsafe-eval");
+    } finally {
+      if (previousDashboardDirectory === undefined) {
+        delete process.env.TOKTRACKER_DASHBOARD_DIR;
+      } else {
+        process.env.TOKTRACKER_DASHBOARD_DIR = previousDashboardDirectory;
+      }
+    }
+  });
+
   test("pairs a dashboard once, rotates refresh tokens, and revokes devices", async () => {
     const store = await testStore();
     const app = createApp(store, "");

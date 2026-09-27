@@ -3,6 +3,8 @@ import { useState } from "react";
 
 import { errorResponseSchema } from "@/lib/schemas";
 
+import { BrandMark } from "./primitives";
+
 export const PairingDialog = () => {
   const [pairingCode, setPairingCode] = useState("");
   const [deviceName, setDeviceName] = useState(
@@ -41,35 +43,40 @@ export const PairingDialog = () => {
   };
 
   return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-background/90 p-4 backdrop-blur">
+    <div className="fixed inset-0 z-50 grid place-items-center bg-background p-4">
+      <div className="app-backdrop" />
       <form
-        className="w-full max-w-sm space-y-4 rounded-lg border bg-card p-6 shadow-xl"
+        className="surface-card animate-rise relative w-full max-w-sm space-y-5 p-7 shadow-2xl"
         onSubmit={submitPairingCode}
       >
         <div>
-          <h1 className="text-lg font-semibold">Pair this device</h1>
-          <p className="mt-1 text-sm text-muted-foreground">
-            Run <code>toktracker-gateway auth code</code> on the gateway, then
-            enter the one-time code below.
+          <BrandMark className="size-11 rounded-xl" />
+          <h1 className="mt-5 text-xl font-semibold">Pair this browser</h1>
+          <p className="mt-1.5 text-sm text-muted-foreground">
+            On the gateway machine, run{" "}
+            <code className="whitespace-nowrap rounded-md border bg-muted px-1.5 py-0.5 font-mono text-xs text-foreground">
+              toktracker-gateway auth code
+            </code>{" "}
+            and enter the one-time code below.
           </p>
         </div>
-        <label className="block space-y-1 text-sm font-medium">
+        <label className="block space-y-1.5 text-sm font-medium">
           <span>Device name</span>
           <input
-            autoComplete="name"
-            className="h-10 w-full rounded-md border bg-background px-3"
+            autoComplete="off"
+            className="h-10 w-full rounded-lg border bg-card px-3 font-normal outline-none transition focus:border-primary focus:ring-3 focus:ring-primary/20"
             maxLength={128}
             onChange={(event) => setDeviceName(event.target.value)}
             required
             value={deviceName}
           />
         </label>
-        <label className="block space-y-1 text-sm font-medium">
+        <label className="block space-y-1.5 text-sm font-medium">
           <span>Pairing code</span>
           <input
             autoCapitalize="characters"
             autoComplete="one-time-code"
-            className="h-10 w-full rounded-md border bg-background px-3 font-mono uppercase tracking-wider"
+            className="h-11 w-full rounded-lg border bg-card px-3 text-center font-mono text-base uppercase tracking-code outline-none transition focus:border-primary focus:ring-3 focus:ring-primary/20"
             maxLength={64}
             onChange={(event) => setPairingCode(event.target.value)}
             placeholder="XXXX-XXXX-XXXX-XXXX"
@@ -78,14 +85,16 @@ export const PairingDialog = () => {
           />
         </label>
         {pairingError && (
-          <p className="text-sm text-destructive">{pairingError}</p>
+          <p className="rounded-lg bg-destructive/10 px-3 py-2 text-sm text-destructive">
+            {pairingError}
+          </p>
         )}
         <button
-          className="h-10 w-full rounded-md bg-primary px-4 font-medium text-primary-foreground disabled:opacity-50"
+          className="brand-gradient h-10 w-full rounded-lg px-4 font-medium text-primary-foreground shadow-glow-lg transition hover:brightness-110 disabled:opacity-50"
           disabled={pairing}
           type="submit"
         >
-          {pairing ? "Pairing…" : "Pair device"}
+          {pairing ? "Pairing…" : "Pair and continue"}
         </button>
       </form>
     </div>

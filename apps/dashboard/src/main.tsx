@@ -14,7 +14,7 @@ if (!rootElement) {
 
 createRoot(rootElement).render(
   <StrictMode>
-    <ThemeProvider defaultTheme="system" storageKey="toktracker-theme">
+    <ThemeProvider>
       <BrowserRouter>
         <App />
       </BrowserRouter>

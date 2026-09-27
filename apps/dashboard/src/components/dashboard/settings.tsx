@@ -5,6 +5,7 @@ import {
   Download,
   Laptop,
   MonitorSmartphone,
+  Palette,
   Plug,
   ShieldBan,
   SlidersHorizontal,
@@ -12,6 +13,7 @@ import {
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
+import { AppearanceSettings } from "@/components/dashboard/appearance-settings";
 import { AgentLogo } from "@/components/dashboard/primitives";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -27,6 +29,7 @@ import {
 
 export type SettingsSection =
   | "general"
+  | "appearance"
   | "devices"
   | "export"
   | "providers"
@@ -145,7 +148,7 @@ const Calendar = ({
     setRange({ from: range.from, to: day });
   };
   return (
-    <div className="rounded-lg border bg-card p-4">
+    <div className="surface-card p-5">
       <div className="mb-3 flex items-center justify-between">
         <Button
           aria-label="Previous month"
@@ -252,12 +255,13 @@ export const SettingsNavigation = ({
     aria-label="Settings"
     className="mt-6 flex min-h-0 flex-1 flex-col text-sm"
   >
-    <p className="mb-2 px-3 text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
+    <p className="mb-2 px-3 text-2xs font-medium uppercase tracking-wider text-muted-foreground">
       Settings
     </p>
     {(
       [
         { icon: SlidersHorizontal, label: "General", value: "general" },
+        { icon: Palette, label: "Appearance", value: "appearance" },
         { icon: Plug, label: "Providers", value: "providers" },
         { icon: MonitorSmartphone, label: "Devices", value: "devices" },
         { icon: Download, label: "Data & export", value: "export" },
@@ -267,7 +271,7 @@ export const SettingsNavigation = ({
         type="button"
         key={item.value}
         onClick={() => setSection(item.value)}
-        className={`flex items-center gap-3 rounded-md px-3 py-2 text-left transition ${section === item.value || (item.value === "providers" && (section === "cursor" || section === "copilot")) ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+        className={`flex items-center gap-3 rounded-lg px-3 py-2 text-left transition ${section === item.value || (item.value === "providers" && (section === "cursor" || section === "copilot")) ? "bg-primary/10 font-medium text-foreground [&>svg]:text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
       >
         <item.icon size={15} />
         {item.label}
@@ -586,6 +590,9 @@ export const SettingsPage = ({
       setSelectedIds((ids) => ids.filter((deviceId) => deviceId !== id));
     }
   };
+  if (section === "appearance") {
+    return <AppearanceSettings />;
+  }
   if (section === "general") {
     return (
       <section className="max-w-3xl">
@@ -593,7 +600,7 @@ export const SettingsPage = ({
         <p className="mt-1 text-sm text-muted-foreground">
           Customize how session activity is displayed.
         </p>
-        <div className="mt-8 rounded-lg border bg-card p-4">
+        <div className="mt-8 surface-card p-5">
           <h3 className="font-medium">Session order</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             Choose how sessions are ordered throughout the dashboard.
@@ -621,7 +628,7 @@ export const SettingsPage = ({
             </span>
           </label>
         </div>
-        <div className="mt-6 rounded-lg border bg-card p-4">
+        <div className="mt-6 surface-card p-5">
           <h3 className="font-medium">Gateway-controlled client updates</h3>
           <p className="mt-1 text-sm text-muted-foreground">
             Ask opted-in clients to install releases only during their local
@@ -765,7 +772,7 @@ export const SettingsPage = ({
           <div className="mt-8 grid gap-3 sm:grid-cols-2">
             <Link
               to="/settings/providers/cursor"
-              className="rounded-lg border bg-card p-5 transition hover:border-primary/50 hover:bg-muted/40"
+              className="surface-card p-5 transition hover:border-primary/50"
             >
               <div className="flex items-center gap-3">
                 <AgentLogo name="cursor" size="size-6" />
@@ -778,7 +785,7 @@ export const SettingsPage = ({
             </Link>
             <Link
               to="/settings/providers/copilot"
-              className="rounded-lg border bg-card p-5 transition hover:border-primary/50 hover:bg-muted/40"
+              className="surface-card p-5 transition hover:border-primary/50"
             >
               <div className="font-medium">GitHub Copilot</div>
               <p className="mt-3 text-sm text-muted-foreground">
@@ -788,7 +795,7 @@ export const SettingsPage = ({
           </div>
         )}
         {section === "copilot" && (
-          <div className="mt-8 rounded-lg border bg-card p-4">
+          <div className="mt-8 surface-card p-5">
             <h3 className="font-medium">GitHub Copilot</h3>
             <p className="mt-1 text-sm text-muted-foreground">
               Choose the local Copilot sources imported by every opted-in
@@ -879,7 +886,7 @@ export const SettingsPage = ({
         )}
         {section === "cursor" && (
           <>
-            <div className="mt-8 rounded-lg border bg-card p-4">
+            <div className="mt-8 surface-card p-5">
               <h3 className="font-medium">Sync interval</h3>
               <p className="mt-1 text-sm text-muted-foreground">
                 How often clients refresh Cursor usage CSV from Cursor’s API.
@@ -1015,7 +1022,7 @@ export const SettingsPage = ({
                 </div>
               )}
             </div>
-            <div className="mt-6 rounded-lg border bg-card p-4">
+            <div className="mt-6 surface-card p-5">
               <h3 className="font-medium">Cloud Agent accounts</h3>
               <p className="mt-1 text-sm text-muted-foreground">
                 Keys stay on this gateway. Sync imports Cloud Agent projects,
@@ -1086,7 +1093,7 @@ export const SettingsPage = ({
                 </p>
               )}
             </div>
-            <div className="mt-6 rounded-lg border bg-card p-4">
+            <div className="mt-6 surface-card p-5">
               <h3 className="font-medium">Auth status</h3>
               <p className="mt-1 text-sm text-muted-foreground">
                 Status reported by each client after it scans Cursor desktop
@@ -1190,7 +1197,7 @@ export const SettingsPage = ({
                 </div>
               ))}
             </div>
-            <div className="mt-6 rounded-lg border bg-card p-4">
+            <div className="mt-6 surface-card p-5">
               <h3 className="font-medium">Add account</h3>
               <p className="mt-1 text-sm text-muted-foreground">
                 Import the desktop session again, or paste a
@@ -1312,7 +1319,7 @@ export const SettingsPage = ({
           Manage dashboard access and the devices that send usage data.
         </p>
         <div className="mt-8 grid gap-6">
-          <div className="rounded-lg border bg-card">
+          <div className="surface-card">
             <div className="border-b p-4">
               <h3 className="font-medium">Signed-in dashboard devices</h3>
               <p className="mt-1 text-sm text-muted-foreground">
@@ -1346,7 +1353,7 @@ export const SettingsPage = ({
               </p>
             )}
           </div>
-          <div className="rounded-lg border bg-card">
+          <div className="surface-card">
             <div className="border-b p-4">
               <h3 className="font-medium">Usage devices</h3>
               <p className="mt-1 text-sm text-muted-foreground">
@@ -1359,7 +1366,7 @@ export const SettingsPage = ({
                 className="flex items-center gap-3 border-b p-4 last:border-0"
               >
                 <span
-                  className={`size-2 rounded-full ${isOnline(device.lastSeen) ? "bg-emerald-500" : "bg-muted-foreground"}`}
+                  className={`size-2 rounded-full ${isOnline(device.lastSeen) ? "bg-success" : "bg-muted-foreground"}`}
                 />
                 <div className="min-w-0 flex-1">
                   <p className="truncate text-sm font-medium">{device.name}</p>
@@ -1422,7 +1429,7 @@ export const SettingsPage = ({
             ))}
           </div>
         </div>
-        <div className="rounded-lg border bg-card">
+        <div className="surface-card">
           <div className="border-b p-4">
             <div className="flex items-start justify-between gap-4">
               <div>

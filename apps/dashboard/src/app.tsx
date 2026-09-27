@@ -1,5 +1,5 @@
 import type { SessionSort, TimeRange } from "@toktracker/shared";
-import { ArrowLeft, Search, Settings, Zap } from "lucide-react";
+import { ArrowLeft, Search, Settings } from "lucide-react";
 import {
   lazy,
   Suspense,
@@ -17,13 +17,22 @@ import {
   useSearchParams,
 } from "react-router-dom";
 
-import { DeviceFilter, ThemeControl } from "@/components/dashboard/filters";
-import { Navigation } from "@/components/dashboard/navigation";
+import { QuickAppearanceMenu } from "@/components/dashboard/appearance-controls";
+import { DeviceFilter } from "@/components/dashboard/filters";
+import {
+  ConnectionStatus,
+  Navigation,
+} from "@/components/dashboard/navigation";
 import { PairingDialog } from "@/components/dashboard/pairing-dialog";
-import { EmptyState } from "@/components/dashboard/primitives";
+import { BrandMark, PageSkeleton } from "@/components/dashboard/primitives";
 import { AUTH_REQUIRED_EVENT, apiFetch } from "@/lib/api";
 import { EMPTY_SUMMARY } from "@/lib/dashboard";
 import { Link, NAV_ITEMS } from "@/lib/navigation";
+import {
+  isOnboardingComplete,
+  markOnboardingComplete,
+  ONBOARDING_PATH,
+} from "@/lib/onboarding";
 import { dashboardSummarySchema, timeRangeSchema } from "@/lib/schemas";
 import { parseSettingsPath } from "@/lib/settings-path";
 import { OverviewPage } from "@/pages/overview-page";
@@ -33,6 +42,10 @@ import { OverviewPage } from "@/pages/overview-page";
 const CommandPalette = lazy(async () => {
   const module = await import("@/components/dashboard/command-palette");
   return { default: module.CommandPalette };
+});
+const Onboarding = lazy(async () => {
+  const module = await import("@/components/dashboard/onboarding");
+  return { default: module.Onboarding };
 });
 const SettingsNavigation = lazy(async () => {
   const module = await import("@/components/dashboard/settings");
@@ -82,6 +95,32 @@ const fetchSummary = async (
     throw new Error("Summary request failed");
   }
   return dashboardSummarySchema.parse(await response.json());
+};
+
+// The tour shows once per browser, and again whenever /welcome is opened.
+interface OnboardingState {
+  finishOnboarding: () => void;
+  showOnboarding: boolean;
+}
+
+const OVERVIEW_PATHS = new Set(["/", ONBOARDING_PATH]);
+
+const useOnboarding = (authRequired: boolean): OnboardingState => {
+  const [complete, setComplete] = useState(isOnboardingComplete);
+  const location = useLocation();
+  const navigate = useNavigate();
+  const onWelcomePath = location.pathname === ONBOARDING_PATH;
+  const finishOnboarding = useCallback((): void => {
+    markOnboardingComplete();
+    setComplete(true);
+    if (onWelcomePath) {
+      navigate("/");
+    }
+  }, [navigate, onWelcomePath]);
+  return {
+    finishOnboarding,
+    showOnboarding: !authRequired && (!complete || onWelcomePath),
+  };
 };
 
 const App = () => {
@@ -248,12 +287,13 @@ const App = () => {
       pageTitle === "TokTracker" ? pageTitle : `${pageTitle} | TokTracker`;
   }, [pageTitle]);
 
-  const isOverviewRoute = location.pathname === "/";
+  const { finishOnboarding, showOnboarding } = useOnboarding(authRequired);
+  const isOverviewRoute = OVERVIEW_PATHS.has(location.pathname);
   const loading =
     isOverviewRoute && !settingsOpen ? overviewLoading : globalLoading;
   let mainContent: React.ReactNode;
   if (loading) {
-    mainContent = <EmptyState>Loading usage…</EmptyState>;
+    mainContent = <PageSkeleton />;
   } else if (isSettingsPath && settingsSection === undefined) {
     mainContent = <Navigate replace to="/settings/general" />;
   } else if (settingsOpen) {
@@ -268,6 +308,16 @@ const App = () => {
   } else {
     mainContent = (
       <Routes>
+        <Route
+          path={ONBOARDING_PATH}
+          element={
+            <OverviewPage
+              data={overviewData}
+              range={range}
+              setRange={(nextRange) => updateSearchParam("range", nextRange)}
+            />
+          }
+        />
         <Route
           path="/"
           element={
@@ -310,8 +360,14 @@ const App = () => {
   }
 
   return (
-    <div className="min-h-screen bg-background text-foreground">
+    <div className="relative min-h-screen bg-background text-foreground">
+      <div className="app-backdrop" />
       {authRequired && <PairingDialog />}
+      {showOnboarding && (
+        <Suspense fallback={null}>
+          <Onboarding devices={data.devices} onFinish={finishOnboarding} />
+        </Suspense>
+      )}
       {searchLoaded && (
         <Suspense fallback={null}>
           <CommandPalette
@@ -323,14 +379,14 @@ const App = () => {
           />
         </Suspense>
       )}
-      <aside className="fixed inset-y-0 left-0 z-20 hidden w-56 flex-col border-r bg-card px-4 py-5 lg:flex">
-        <Link to="/" className="flex items-center gap-3">
-          <div className="grid size-8 place-items-center rounded-md bg-primary text-primary-foreground">
-            <Zap size={19} />
-          </div>
+      <aside className="fixed inset-y-0 left-0 z-20 hidden w-60 flex-col border-r bg-sidebar/85 px-4 py-5 backdrop-blur-xl lg:flex">
+        <Link to="/" className="flex items-center gap-3 px-1">
+          <BrandMark />
           <div>
-            <div className="font-semibold tracking-tight">TokTracker</div>
-            <div className="text-xs text-muted-foreground">
+            <div className="font-heading font-semibold leading-tight">
+              TokTracker
+            </div>
+            <div className="text-2xs text-muted-foreground">
               Usage intelligence
             </div>
           </div>
@@ -345,21 +401,25 @@ const App = () => {
         ) : (
           <Navigation data={data} />
         )}
-        <div className="mt-auto">
+        <div className="mt-auto space-y-2 pt-4">
+          <ConnectionStatus devices={data.devices} />
           <button
             type="button"
             onClick={() => navigate(settingsOpen ? "/" : "/settings/general")}
-            className="flex w-full items-center gap-3 rounded-md px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
+            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-muted-foreground transition hover:bg-muted hover:text-foreground"
           >
             {settingsOpen ? <ArrowLeft size={15} /> : <Settings size={15} />}
-            {settingsOpen ? "Back" : "Settings"}
+            {settingsOpen ? "Back to dashboard" : "Settings"}
           </button>
         </div>
       </aside>
-      <main className="lg:pl-56">
-        <header className="sticky top-0 z-10 flex h-14 items-center gap-4 border-b bg-background/90 px-5 backdrop-blur md:px-8">
-          <div className="hidden md:block">
-            <h1 className="text-lg font-semibold">
+      <main className="relative lg:pl-60">
+        <header className="sticky top-0 z-10 flex h-16 items-center gap-3 border-b bg-background/85 px-4 backdrop-blur-xl md:px-8">
+          <Link to="/" className="lg:hidden">
+            <BrandMark className="size-8" />
+          </Link>
+          <div className="hidden min-w-0 md:block">
+            <h1 className="truncate text-base font-semibold">
               {settingsOpen ? "Settings" : pageTitle}
             </h1>
           </div>
@@ -369,17 +429,17 @@ const App = () => {
               setSearchLoaded(true);
               setSearchOpen(true);
             }}
-            className="mx-auto flex h-9 w-full max-w-xl items-center gap-2 rounded-md border bg-muted px-3 text-sm text-muted-foreground transition hover:bg-background hover:text-foreground"
+            className="mx-auto flex h-9 min-w-0 max-w-lg flex-1 items-center gap-2 rounded-lg border bg-card/80 px-3 text-sm text-muted-foreground shadow-xs transition hover:border-foreground/20 hover:text-foreground"
           >
             <Search size={15} />
             <span className="truncate">
               Search agents, projects, models, sessions…
             </span>
-            <kbd className="ml-auto hidden rounded border bg-background px-1.5 py-0.5 text-[10px] font-medium sm:inline">
+            <kbd className="ml-auto hidden rounded-md border bg-muted px-1.5 py-0.5 font-mono text-3xs font-medium sm:inline">
               ⌘K
             </kbd>
           </button>
-          <ThemeControl />
+          <QuickAppearanceMenu />
           {!settingsOpen && (
             <DeviceFilter
               devices={data.devices}
@@ -391,10 +451,8 @@ const App = () => {
           )}
         </header>
         <Navigation data={data} mobile />
-        <div className="mx-auto max-w-[1600px] p-4 md:p-6">
-          <Suspense fallback={<EmptyState>Loading…</EmptyState>}>
-            {mainContent}
-          </Suspense>
+        <div className="mx-auto max-w-[1600px] p-4 md:p-8">
+          <Suspense fallback={<PageSkeleton />}>{mainContent}</Suspense>
         </div>
       </main>
     </div>
