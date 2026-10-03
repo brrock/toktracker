@@ -1,8 +1,6 @@
 # TokTracker
 
-<video src="https://github.com/brrock/toktracker/raw/main/assets/video.mp4" controls muted playsinline width="100%"></video>
-
-[Watch the TokTracker video](assets/video.mp4)
+<video src="https://github.com/user-attachments/assets/e8a95a47-db46-495b-ac62-28fe48642202" controls muted playsinline width="100%"></video>
 
 **TokTracker is a self-hosted, local-first dashboard for AI coding-agent usage.** It reads session data already on your machines, estimates or preserves reported costs, and sends the results to a gateway you control.
 
