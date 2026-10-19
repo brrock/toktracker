@@ -6,6 +6,7 @@ import {
   parseClaude,
   canonicalModelId,
   calculateCost,
+  parseLiteLlmCatalog,
   summarize,
 } from "../src";
 
@@ -219,4 +220,23 @@ describe("tokscale-core parity", () => {
       )
     ).toBe(3.15);
   });
+});
+
+test("LiteLLM catalog parses entries that mix prices with metadata", () => {
+  const catalog = parseLiteLlmCatalog({
+    "claude-sonnet-4-5": {
+      cache_read_input_token_cost: 3e-7,
+      input_cost_per_token: 3e-6,
+      litellm_provider: "anthropic",
+      mode: "chat",
+      output_cost_per_token: 1.5e-5,
+      supported_endpoints: ["/v1/chat/completions"],
+      supports_vision: true,
+    },
+    "dall-e-3": { litellm_provider: "openai", mode: "image_generation" },
+  });
+  expect(Object.keys(catalog)).toEqual(["claude-sonnet-4-5"]);
+  expect(catalog["claude-sonnet-4-5"]?.input).toBeCloseTo(3);
+  expect(catalog["claude-sonnet-4-5"]?.output).toBeCloseTo(15);
+  expect(catalog["claude-sonnet-4-5"]?.cacheRead).toBeCloseTo(0.3);
 });

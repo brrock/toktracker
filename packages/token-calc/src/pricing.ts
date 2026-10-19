@@ -44,8 +44,13 @@ const modelsDevCatalogSchema = z.record(
     ),
   })
 );
-const liteLlmModelSchema = z.record(z.string(), finitePriceSchema);
-const liteLlmCatalogSchema = z.record(z.string(), liteLlmModelSchema);
+// LiteLLM entries mix prices with strings, booleans and arrays
+// (`litellm_provider`, `supports_vision`, ...), so validate each price field
+// on its own rather than requiring every value to be a number.
+const liteLlmCatalogSchema = z.record(
+  z.string(),
+  z.record(z.string(), z.unknown())
+);
 
 const tieredCost = (
   tokens: number,
@@ -179,13 +184,17 @@ export const parseLiteLlmCatalog = (value: JsonValue) => {
   }
   const catalog: PriceCatalog = {};
   for (const [modelId, modelValue] of Object.entries(parsed.data)) {
-    const inputPerToken = modelValue.input_cost_per_token;
-    const outputPerToken = modelValue.output_cost_per_token;
+    const perToken = (field: string): number | undefined => {
+      const fieldValue = finitePriceSchema.safeParse(modelValue[field]);
+      return fieldValue.success ? fieldValue.data : undefined;
+    };
+    const inputPerToken = perToken("input_cost_per_token");
+    const outputPerToken = perToken("output_cost_per_token");
     if (inputPerToken === undefined || outputPerToken === undefined) {
       continue;
     }
     const perMillion = (field: string): number | undefined => {
-      const fieldValue = modelValue[field];
+      const fieldValue = perToken(field);
       return fieldValue === undefined ? undefined : fieldValue * 1_000_000;
     };
     catalog[modelId.toLowerCase()] = {
