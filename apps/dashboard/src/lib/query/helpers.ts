@@ -108,15 +108,11 @@ export const rollup = (
     }
     return [name, kind];
   });
-  const result = groupBy(rows, column).map(
-    ({ key, rows: groupRows }): Row =>
-      Object.fromEntries([
-        [column, key],
-        ...checked.map(([name, kind]) => [
-          name,
-          measure(groupRows, name, kind),
-        ]),
-      ])
+  const result = groupBy(rows, column).map(({ key, rows: groupRows }): Row =>
+    Object.fromEntries([
+      [column, key],
+      ...checked.map(([name, kind]) => [name, measure(groupRows, name, kind)]),
+    ])
   );
   const [first] = checked;
   if (!first) {
