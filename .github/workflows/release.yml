@@ -104,8 +104,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add package.json apps/*/package.json packages/*/package.json bun.lock
-          git commit -m "chore(release): $VERSION"
-          git push origin "HEAD:$BRANCH"
+          if git diff --cached --quiet; then
+            echo "Versions already at $VERSION; nothing to commit."
+          else
+            git commit -m "chore(release): $VERSION"
+            git push origin "HEAD:$BRANCH"
+          fi
 
       - name: Record release target
         id: target
