@@ -62,8 +62,9 @@ try {
     path.join(dashboardRoot, "index.html"),
     "utf-8"
   );
-  const dashboardScript = dashboardHtml.match(/src="(?<script>[^"?]+\.js)"/u)
-    ?.groups?.script;
+  const dashboardScript = dashboardHtml.match(
+    /<script[^>]*type="module"[^>]*src="(?<script>[^"?]+\.js)"/u
+  )?.groups?.script;
   if (!dashboardScript) {
     throw new Error("Dashboard index does not reference a JavaScript bundle");
   }
