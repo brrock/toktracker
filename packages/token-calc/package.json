@@ -9,6 +9,6 @@
   },
   "dependencies": {
     "@toktracker/shared": "workspace:*",
-    "zod": "4.3.5"
+    "zod": "4.6.7"
   }
 }

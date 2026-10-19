@@ -36,9 +36,8 @@ export const cellSchema: z.ZodType<Cell> = z.union([
   z.bigint().transform(Number),
   z
     .date()
-    .transform(
-      (value): Cell =>
-        Number.isNaN(value.getTime()) ? null : value.toISOString()
+    .transform((value): Cell =>
+      Number.isNaN(value.getTime()) ? null : value.toISOString()
     ),
   z
     .instanceof(Uint8Array)
@@ -111,22 +110,17 @@ export const queryOutputSchema = z.union([
   }),
   z
     .array(rowObjectSchema)
-    .transform(
-      (rows): NormalizedResult =>
-        rowsToTable(rows.slice(0, QUERY_LIMITS.rows), rows.length)
+    .transform((rows): NormalizedResult =>
+      rowsToTable(rows.slice(0, QUERY_LIMITS.rows), rows.length)
     ),
-  z.array(cellSchema).transform(
-    (values): NormalizedResult => ({
-      columns: ["value"],
-      rows: values.slice(0, QUERY_LIMITS.rows).map((value) => [value]),
-      truncated: values.length > QUERY_LIMITS.rows,
-    })
-  ),
-  cellSchema.transform(
-    (value): NormalizedResult => ({
-      columns: ["value"],
-      rows: [[value]],
-      truncated: false,
-    })
-  ),
+  z.array(cellSchema).transform((values): NormalizedResult => ({
+    columns: ["value"],
+    rows: values.slice(0, QUERY_LIMITS.rows).map((value) => [value]),
+    truncated: values.length > QUERY_LIMITS.rows,
+  })),
+  cellSchema.transform((value): NormalizedResult => ({
+    columns: ["value"],
+    rows: [[value]],
+    truncated: false,
+  })),
 ]);
