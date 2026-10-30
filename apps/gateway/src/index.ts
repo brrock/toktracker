@@ -1,3 +1,8 @@
+import {
+  autoUpdateGateway,
+  currentGatewayVersion,
+} from "@toktracker/cli/gateway";
+
 import { createApp } from "./app";
 import { Store } from "./store";
 
@@ -13,7 +18,18 @@ if (!isLoopbackHost && !accessKey) {
     "TOKTRACKER_API_KEY is required when exposing the gateway beyond localhost"
   );
 }
-const app = createApp(new Store(), accessKey, dashboardAuthRequired);
+const store = new Store();
+const installedVersion = await currentGatewayVersion();
+store.reconcileGatewayUpdate(installedVersion);
+const app = createApp(
+  store,
+  accessKey,
+  dashboardAuthRequired,
+  // Source checkouts have no installed release to update.
+  installedVersion
+    ? { currentVersion: currentGatewayVersion, update: autoUpdateGateway }
+    : undefined
+);
 // Development mode serves verbose error pages with stack traces.
 export default {
   development: process.env.TOKTRACKER_DEV === "1",

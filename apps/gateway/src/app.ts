@@ -20,6 +20,7 @@ import { z } from "zod";
 import { syncCloudAgentAccount } from "./cursor-cloud-agents";
 import type {
   ClientAutoUpdateSettings,
+  GatewayUpdateStatus,
   CursorDeviceStatus,
   DashboardCredentials,
   Store,
@@ -330,10 +331,23 @@ const boundedInteger = (
     : fallback;
 };
 
+/** Lets the gateway update its own installation; absent for source checkouts. */
+export interface GatewayUpdater {
+  currentVersion: () => Promise<string | undefined>;
+  update: (channel: "nightly" | "stable") => Promise<boolean>;
+}
+
+const GATEWAY_UPDATE_STALE_MS = 10 * 60 * 1000;
+const GATEWAY_UPDATE_START_DELAY_MS = 500;
+const gatewayUpdateBodySchema = z.object({
+  channel: z.enum(["stable", "nightly"]),
+});
+
 export const createApp = (
   store: Store,
   accessKey = process.env.TOKTRACKER_API_KEY,
-  dashboardAuthRequired = true
+  dashboardAuthRequired = true,
+  gatewayUpdater?: GatewayUpdater
 ): Hono => {
   const app = new Hono();
   const accessKeyDigest = accessKey ? sha256(accessKey) : undefined;
@@ -546,6 +560,83 @@ export const createApp = (
         channel,
         ...(await lookupClientRelease(channel)),
       });
+    } catch (error) {
+      return context.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not look up the release",
+        },
+        502
+      );
+    }
+  });
+  app.get("/api/v1/settings/gateway-update", async (context) =>
+    context.json({
+      available: Boolean(gatewayUpdater),
+      currentVersion: await gatewayUpdater?.currentVersion(),
+      status: store.gatewayUpdateStatus() ?? null,
+    })
+  );
+  app.post("/api/v1/settings/gateway-update", async (context) => {
+    if (!gatewayUpdater) {
+      return context.json(
+        { error: "Updates are unavailable for this installation" },
+        501
+      );
+    }
+    let body: z.infer<typeof gatewayUpdateBodySchema>;
+    try {
+      body = gatewayUpdateBodySchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid gateway update request" }, 400);
+    }
+    const existing = store.gatewayUpdateStatus();
+    if (
+      existing?.state === "running" &&
+      Date.now() - existing.startedAt < GATEWAY_UPDATE_STALE_MS
+    ) {
+      return context.json(
+        { error: "A gateway update is already running" },
+        409
+      );
+    }
+    try {
+      const release = await lookupClientRelease(body.channel);
+      if (release.version === (await gatewayUpdater.currentVersion())) {
+        return context.json(
+          { error: "The gateway is already up to date" },
+          409
+        );
+      }
+      const status: GatewayUpdateStatus = {
+        channel: body.channel,
+        startedAt: Date.now(),
+        state: "running",
+        targetVersion: release.version,
+      };
+      store.setGatewayUpdateStatus(status);
+      // Respond first: a successful update restarts this process.
+      setTimeout(async () => {
+        try {
+          await gatewayUpdater.update(body.channel);
+          store.setGatewayUpdateStatus({
+            ...status,
+            finishedAt: Date.now(),
+            message: "Installed; restart the gateway to run the new version.",
+            state: "updated",
+          });
+        } catch (error) {
+          store.setGatewayUpdateStatus({
+            ...status,
+            finishedAt: Date.now(),
+            message: error instanceof Error ? error.message : String(error),
+            state: "failed",
+          });
+        }
+      }, GATEWAY_UPDATE_START_DELAY_MS);
+      return context.json(status, 202);
     } catch (error) {
       return context.json(
         {
