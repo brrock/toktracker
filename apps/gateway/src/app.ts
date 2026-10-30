@@ -846,7 +846,8 @@ export const createApp = (
         includeAllDevices,
         context.req.query("sessionSort") === "createdAt"
           ? "createdAt"
-          : "lastSeen"
+          : "lastSeen",
+        context.req.query("date")
       )
     );
   });

@@ -21,19 +21,40 @@ const insight = (data: DashboardSummary, periodLabel: string): string => {
   return `${agentName} did ${share}% of the work ${periodLabel.toLowerCase()} across ${compact(data.totals.sessions)} sessions.`;
 };
 
+const localDateKey = (date: Date): string =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+
+const dateLabel = (date: string): string =>
+  new Intl.DateTimeFormat("en-US", {
+    day: "numeric",
+    month: "short",
+    year: "numeric",
+  }).format(new Date(`${date}T00:00:00`));
+
 export const OverviewPage = ({
   data,
+  date,
   range,
+  setDate,
   setRange,
 }: {
   data: DashboardSummary;
+  date?: string;
   range: TimeRange;
+  setDate: (date?: string) => void;
   setRange: (range: TimeRange) => void;
 }) => {
   const { appearance } = useAppearance();
-  const periodLabel =
-    RANGE_OPTIONS.find((option) => option.value === range)?.label ??
-    "This month";
+  const options = date
+    ? RANGE_OPTIONS.map((option) =>
+        option.value === "day" ? { ...option, label: dateLabel(date) } : option
+      )
+    : RANGE_OPTIONS;
+  const periodLabel = date
+    ? dateLabel(date)
+    : (RANGE_OPTIONS.find((option) => option.value === range)?.label ??
+      "This month");
+  const todayKey = localDateKey(new Date());
   const trendSource = range === "day" ? data.hourly : data.daily;
   const recent = trendSource.slice(-SPARKLINE_POINTS);
   const averageCost = data.totals.sessions
@@ -106,13 +127,26 @@ export const OverviewPage = ({
           stats,
         }}
         actions={
-          <SegmentedControl
-            label="Usage period"
-            options={RANGE_OPTIONS}
-            size="md"
-            value={range}
-            onChange={setRange}
-          />
+          <div className="flex flex-wrap items-center gap-2">
+            <SegmentedControl
+              label="Usage period"
+              options={options}
+              size="md"
+              value={range}
+              onChange={setRange}
+            />
+            <input
+              type="date"
+              aria-label="Show usage for a specific date"
+              className="h-9 rounded-lg border bg-card px-3 text-sm"
+              max={todayKey}
+              value={date ?? ""}
+              onChange={(event) => {
+                const next = event.target.value;
+                setDate(next && next !== todayKey ? next : undefined);
+              }}
+            />
+          </div>
         }
         heading={
           <>
