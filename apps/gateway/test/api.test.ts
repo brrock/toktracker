@@ -284,6 +284,61 @@ describe("gateway API", () => {
     });
   });
 
+  test("targets dashboard update requests at selected devices", async () => {
+    const store = await testStore();
+    const app = createApp(store, "");
+    const unauthorized = await app.request(
+      "/api/v1/settings/client-update-request",
+      {
+        body: JSON.stringify({ channel: "stable" }),
+        headers: { "content-type": "application/json" },
+        method: "POST",
+      }
+    );
+    expect(unauthorized.status).toBe(401);
+
+    const request = store.createClientUpdateRequest({
+      changelog: "### Fixes\n- Fixed a thing",
+      channel: "stable",
+      deviceIds: ["device-a"],
+      version: "v9.9.9",
+    });
+    const targeted = await app.request(
+      "/api/v1/client-update-policy?deviceId=device-a"
+    );
+    const targetedPolicy = await targeted.json();
+    expect(targetedPolicy.pendingUpdate).toEqual({
+      channel: "stable",
+      id: request.id,
+      version: "v9.9.9",
+    });
+    const other = await app.request(
+      "/api/v1/client-update-policy?deviceId=device-b"
+    );
+    const otherPolicy = await other.json();
+    expect(otherPolicy.pendingUpdate).toBeUndefined();
+
+    const reported = await app.request("/api/v1/client-update-result", {
+      body: JSON.stringify({
+        deviceId: "device-a",
+        requestId: request.id,
+        status: "updated",
+        version: "v9.9.9",
+      }),
+      headers: { "content-type": "application/json" },
+      method: "POST",
+    });
+    expect(await reported.json()).toEqual({ ok: true });
+    const settled = await app.request(
+      "/api/v1/client-update-policy?deviceId=device-a"
+    );
+    const settledPolicy = await settled.json();
+    expect(settledPolicy.pendingUpdate).toBeUndefined();
+    expect(store.clientUpdateRequest()?.results["device-a"]?.status).toBe(
+      "updated"
+    );
+  });
+
   test("rejects non-object client update settings", async () => {
     const store = await testStore();
     const app = createApp(store, "");

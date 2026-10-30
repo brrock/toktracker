@@ -111,6 +111,35 @@ export interface ClientAutoUpdateSettings {
   windowStartHour: number;
 }
 
+export type ClientUpdateResultStatus = "failed" | "updated";
+
+export interface ClientUpdateResult {
+  at: number;
+  error?: string;
+  status: ClientUpdateResultStatus;
+  version?: string;
+}
+
+/** A dashboard-triggered update that bypasses the maintenance window. */
+export interface ClientUpdateRequest {
+  changelog: string;
+  channel: "nightly" | "stable";
+  createdAt: number;
+  deviceIds: string[];
+  id: string;
+  releaseUrl?: string;
+  results: Record<string, ClientUpdateResult>;
+  version: string;
+}
+
+export interface ClientUpdateRequestDraft {
+  changelog: string;
+  channel: "nightly" | "stable";
+  deviceIds: string[];
+  releaseUrl?: string;
+  version: string;
+}
+
 export interface CursorAccountStatus {
   cloudAgentApiKeyConfigured?: boolean;
   id: string;
@@ -206,6 +235,25 @@ const clientAutoUpdateSettingsSchema: z.ZodType<ClientAutoUpdateSettings> =
     windowEndHour: z.number().int().min(0).max(23),
     windowStartHour: z.number().int().min(0).max(23),
   });
+
+const clientUpdateRequestSchema: z.ZodType<ClientUpdateRequest> = z.object({
+  changelog: z.string(),
+  channel: z.enum(["stable", "nightly"]),
+  createdAt: z.number(),
+  deviceIds: z.array(z.string()),
+  id: z.string(),
+  releaseUrl: z.string().optional(),
+  results: z.record(
+    z.string(),
+    z.object({
+      at: z.number(),
+      error: z.string().optional(),
+      status: z.enum(["failed", "updated"]),
+      version: z.string().optional(),
+    })
+  ),
+  version: z.string(),
+});
 
 const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
   channel: "stable",
@@ -916,6 +964,79 @@ export class Store {
       )
       .run(JSON.stringify(settings));
     return settings;
+  }
+
+  activeDeviceIds(): string[] {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const rows = this.db
+      .query("SELECT id FROM devices WHERE banned_at IS NULL ORDER BY name")
+      .all() as { id: string }[];
+    return rows.map((row) => row.id);
+  }
+
+  clientUpdateRequest(): ClientUpdateRequest | undefined {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const row = this.db
+      .query(
+        "SELECT value FROM gateway_settings WHERE key='client_update_request'"
+      )
+      .get() as { value: string } | null;
+    if (!row) {
+      return undefined;
+    }
+    try {
+      const value = clientUpdateRequestSchema.safeParse(JSON.parse(row.value));
+      return value.success ? value.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  createClientUpdateRequest(
+    draft: ClientUpdateRequestDraft
+  ): ClientUpdateRequest {
+    const request: ClientUpdateRequest = {
+      ...draft,
+      createdAt: Date.now(),
+      id: crypto.randomUUID(),
+      results: {},
+    };
+    this.saveClientUpdateRequest(request);
+    return request;
+  }
+
+  /** The active request if it targets this device and it has not reported back. */
+  pendingClientUpdateFor(deviceId: string): ClientUpdateRequest | undefined {
+    const request = this.clientUpdateRequest();
+    return request?.deviceIds.includes(deviceId) && !request.results[deviceId]
+      ? request
+      : undefined;
+  }
+
+  recordClientUpdateResult(
+    deviceId: string,
+    requestId: string,
+    result: ClientUpdateResult
+  ): boolean {
+    const request = this.clientUpdateRequest();
+    if (
+      request?.id !== requestId ||
+      !request.deviceIds.includes(deviceId) ||
+      request.results[deviceId]
+    ) {
+      return false;
+    }
+    request.results[deviceId] = result;
+    this.saveClientUpdateRequest(request);
+    return true;
+  }
+
+  private saveClientUpdateRequest(request: ClientUpdateRequest): void {
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('client_update_request',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(request));
   }
 
   cursorDashboardSettings(): CursorDashboardSettings {

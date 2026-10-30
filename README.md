@@ -119,7 +119,7 @@ A client validates a new gateway URL before saving it. Use `--skip-check` only w
 
 ### Gateway-managed automatic updates
 
-In **Settings → General**, a gateway administrator can enable automatic client updates, choose the stable or nightly channel, and set a maintenance window (default 02:00–04:00). Each client evaluates that window in its own local time, checks at most once every 15 minutes, and updates at most once per day. The feature is off by default. Clients can always opt out locally with `toktracker-client config set gateway-auto-update 0`; setting it back to `1` opts in again.
+In **Settings → General**, a gateway administrator can enable automatic client updates, choose the stable or nightly channel, and set a maintenance window (default 02:00–04:00). Each client evaluates that window in its own local time, checks in about once a minute, and updates at most once per day inside the window. The feature is off by default. Under **Update clients now** you can instead review the latest release's changelog, pick the devices, and push the update immediately, ignoring the window; the dashboard then shows each device's result. Clients can always opt out locally with `toktracker-client config set gateway-auto-update 0`; setting it back to `1` opts in again.
 
 ### Migrating a legacy global installation
 

@@ -109,6 +109,32 @@ export const clientAutoUpdateSettingsSchema = z.object({
   windowEndHour: z.number().int().min(0).max(23),
   windowStartHour: z.number().int().min(0).max(23),
 });
+export const clientUpdateReleaseSchema = z.object({
+  changelog: z.string(),
+  channel: z.enum(["nightly", "stable"]),
+  releaseUrl: z.string().optional(),
+  version: z.string(),
+});
+export const clientUpdateRequestSchema = z
+  .object({
+    changelog: z.string(),
+    channel: z.enum(["nightly", "stable"]),
+    createdAt: z.number().finite(),
+    deviceIds: z.array(z.string()),
+    id: z.string(),
+    releaseUrl: z.string().optional(),
+    results: z.record(
+      z.string(),
+      z.object({
+        at: z.number().finite(),
+        error: z.string().optional(),
+        status: z.enum(["failed", "updated"]),
+        version: z.string().optional(),
+      })
+    ),
+    version: z.string(),
+  })
+  .nullable();
 export const cursorAccountStatusSchema = z.object({
   cloudAgentApiKeyConfigured: z.boolean().optional(),
   id: z.string(),
