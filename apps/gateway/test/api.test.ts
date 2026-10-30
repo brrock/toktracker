@@ -339,6 +339,52 @@ describe("gateway API", () => {
     );
   });
 
+  test("reports gateway self-update availability and reconciles restarts", async () => {
+    const store = await testStore();
+    const unavailable = createApp(store, "");
+    const headers = await pairDashboard(unavailable, store);
+    const blocked = await unavailable.request(
+      "/api/v1/settings/gateway-update",
+      {
+        body: JSON.stringify({ channel: "stable" }),
+        headers: { ...headers, "content-type": "application/json" },
+        method: "POST",
+      }
+    );
+    expect(blocked.status).toBe(501);
+
+    const app = createApp(store, "", true, {
+      currentVersion: () => Promise.resolve("v1.0.0"),
+      update: () => Promise.resolve(true),
+    });
+    const info = await app.request("/api/v1/settings/gateway-update", {
+      headers,
+    });
+    expect(await info.json()).toEqual({
+      available: true,
+      currentVersion: "v1.0.0",
+      status: null,
+    });
+
+    store.setGatewayUpdateStatus({
+      channel: "stable",
+      startedAt: Date.now(),
+      state: "running",
+      targetVersion: "v1.1.0",
+    });
+    store.reconcileGatewayUpdate("v1.1.0");
+    expect(store.gatewayUpdateStatus()?.state).toBe("updated");
+
+    store.setGatewayUpdateStatus({
+      channel: "stable",
+      startedAt: Date.now(),
+      state: "running",
+      targetVersion: "v1.2.0",
+    });
+    store.reconcileGatewayUpdate("v1.1.0");
+    expect(store.gatewayUpdateStatus()?.state).toBe("failed");
+  });
+
   test("rejects non-object client update settings", async () => {
     const store = await testStore();
     const app = createApp(store, "");

@@ -135,6 +135,20 @@ export const clientUpdateRequestSchema = z
     version: z.string(),
   })
   .nullable();
+export const gatewayUpdateInfoSchema = z.object({
+  available: z.boolean(),
+  currentVersion: z.string().optional(),
+  status: z
+    .object({
+      channel: z.enum(["nightly", "stable"]),
+      finishedAt: z.number().finite().optional(),
+      message: z.string().optional(),
+      startedAt: z.number().finite(),
+      state: z.enum(["failed", "running", "updated"]),
+      targetVersion: z.string(),
+    })
+    .nullable(),
+});
 export const cursorAccountStatusSchema = z.object({
   cloudAgentApiKeyConfigured: z.boolean().optional(),
   id: z.string(),

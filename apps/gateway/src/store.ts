@@ -140,6 +140,15 @@ export interface ClientUpdateRequestDraft {
   version: string;
 }
 
+export interface GatewayUpdateStatus {
+  channel: "nightly" | "stable";
+  finishedAt?: number;
+  message?: string;
+  startedAt: number;
+  state: "failed" | "running" | "updated";
+  targetVersion: string;
+}
+
 export interface CursorAccountStatus {
   cloudAgentApiKeyConfigured?: boolean;
   id: string;
@@ -253,6 +262,15 @@ const clientUpdateRequestSchema: z.ZodType<ClientUpdateRequest> = z.object({
     })
   ),
   version: z.string(),
+});
+
+const gatewayUpdateStatusSchema: z.ZodType<GatewayUpdateStatus> = z.object({
+  channel: z.enum(["stable", "nightly"]),
+  finishedAt: z.number().optional(),
+  message: z.string().optional(),
+  startedAt: z.number(),
+  state: z.enum(["failed", "running", "updated"]),
+  targetVersion: z.string(),
 });
 
 const DEFAULT_CLIENT_AUTO_UPDATE_SETTINGS: ClientAutoUpdateSettings = {
@@ -964,6 +982,47 @@ export class Store {
       )
       .run(JSON.stringify(settings));
     return settings;
+  }
+
+  gatewayUpdateStatus(): GatewayUpdateStatus | undefined {
+    // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+    const row = this.db
+      .query("SELECT value FROM gateway_settings WHERE key='gateway_update'")
+      .get() as { value: string } | null;
+    if (!row) {
+      return undefined;
+    }
+    try {
+      const value = gatewayUpdateStatusSchema.safeParse(JSON.parse(row.value));
+      return value.success ? value.data : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+
+  setGatewayUpdateStatus(status: GatewayUpdateStatus): void {
+    this.db
+      .query(
+        "INSERT INTO gateway_settings(key,value) VALUES('gateway_update',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+      )
+      .run(JSON.stringify(status));
+  }
+
+  /** Settles an update that was interrupted by the restart it triggered. */
+  reconcileGatewayUpdate(runningVersion: string | undefined): void {
+    const status = this.gatewayUpdateStatus();
+    if (status?.state !== "running") {
+      return;
+    }
+    const updated = runningVersion === status.targetVersion;
+    this.setGatewayUpdateStatus({
+      ...status,
+      finishedAt: Date.now(),
+      message: updated
+        ? undefined
+        : `The gateway restarted on ${runningVersion ?? "an unknown version"}; the update did not take effect.`,
+      state: updated ? "updated" : "failed",
+    });
   }
 
   activeDeviceIds(): string[] {

@@ -15,6 +15,7 @@ import { Link } from "react-router-dom";
 
 import { AppearanceSettings } from "@/components/dashboard/appearance-settings";
 import { ClientUpdatePanel } from "@/components/dashboard/client-update-panel";
+import { GatewayUpdatePanel } from "@/components/dashboard/gateway-update-panel";
 import { AgentLogo } from "@/components/dashboard/primitives";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -735,6 +736,9 @@ export const SettingsPage = ({
             </div>
           )}
         </div>
+        {clientAutoUpdate && (
+          <GatewayUpdatePanel channel={clientAutoUpdate.channel} />
+        )}
         {clientAutoUpdate && (
           <ClientUpdatePanel
             channel={clientAutoUpdate.channel}
