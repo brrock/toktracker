@@ -49,7 +49,7 @@ const MAX_BATCH_UNENCRYPTED_BYTES = 15 * 1024 * 1024;
 const MAX_BATCH_SESSIONS = 10_000;
 const MAX_BATCH_MESSAGES = 100_000;
 const MAX_BATCH_SOURCE_UPDATES = 10_000;
-const UPDATE_POLICY_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const UPDATE_POLICY_CHECK_INTERVAL_MS = 60 * 1000;
 const UPDATE_ATTEMPT_INTERVAL_MS = 24 * 60 * 60 * 1000;
 const PRICING_FETCH_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 5 * 60 * 1000;
@@ -886,6 +886,11 @@ async function uploadPlan(plan: SyncPlan) {
 interface ClientUpdatePolicy {
   channel: "nightly" | "stable";
   enabled: boolean;
+  pendingUpdate?: {
+    channel: "nightly" | "stable";
+    id: string;
+    version: string;
+  };
   windowEndHour: number;
   windowStartHour: number;
 }
@@ -893,6 +898,13 @@ interface ClientUpdatePolicy {
 const clientUpdatePolicySchema = z.object({
   channel: z.enum(["nightly", "stable"]),
   enabled: z.boolean(),
+  pendingUpdate: z
+    .object({
+      channel: z.enum(["nightly", "stable"]),
+      id: z.string(),
+      version: z.string(),
+    })
+    .optional(),
   windowEndHour: z.number().int().min(0).max(23),
   windowStartHour: z.number().int().min(0).max(23),
 });
@@ -919,6 +931,94 @@ const setSettingTimestamp = (key: string): void => {
   ).run(key, String(Date.now()));
 };
 
+const gatewayHeaders = (): Headers => {
+  const headers = new Headers();
+  const accessKey = process.env.TOKTRACKER_API_KEY;
+  if (accessKey) {
+    headers.set("authorization", `Bearer ${accessKey}`);
+  }
+  return headers;
+};
+
+const UPDATE_INFLIGHT_KEY = "gateway_update_inflight";
+
+const reportGatewayUpdateResult = async (
+  endpoint: string,
+  result: {
+    error?: string;
+    requestId: string;
+    status: "failed" | "updated";
+    version: string;
+  }
+): Promise<void> => {
+  const headers = gatewayHeaders();
+  headers.set("content-type", "application/json");
+  const response = await fetch(`${endpoint}/api/v1/client-update-result`, {
+    body: JSON.stringify({ ...result, deviceId }),
+    headers,
+    method: "POST",
+    signal: AbortSignal.timeout(5000),
+  });
+  await response.body?.cancel();
+};
+
+/** The update restarts this process, so a result is reported on the next start. */
+const reportInflightGatewayUpdate = async (endpoint: string): Promise<void> => {
+  // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
+  const row = db
+    .query("SELECT value FROM settings WHERE key=?")
+    .get(UPDATE_INFLIGHT_KEY) as { value: string } | null;
+  if (!row) {
+    return;
+  }
+  db.query("DELETE FROM settings WHERE key=?").run(UPDATE_INFLIGHT_KEY);
+  try {
+    const inflight = z
+      .object({ requestId: z.string(), version: z.string() })
+      .parse(JSON.parse(row.value));
+    await reportGatewayUpdateResult(endpoint, {
+      ...inflight,
+      status: "updated",
+    });
+  } catch {
+    // The gateway keeps the device pending if the report cannot be delivered.
+  }
+};
+
+const runPendingGatewayUpdate = async (
+  endpoint: string,
+  pending: NonNullable<ClientUpdatePolicy["pendingUpdate"]>
+): Promise<void> => {
+  db.query(
+    "INSERT INTO settings(key,value) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value"
+  ).run(
+    UPDATE_INFLIGHT_KEY,
+    JSON.stringify({ requestId: pending.id, version: pending.version })
+  );
+  try {
+    const updated = await autoUpdateClient(pending.channel);
+    db.query("DELETE FROM settings WHERE key=?").run(UPDATE_INFLIGHT_KEY);
+    await reportGatewayUpdateResult(endpoint, {
+      ...(updated
+        ? { status: "updated" as const }
+        : {
+            error: "This client is not a versioned release install",
+            status: "failed" as const,
+          }),
+      requestId: pending.id,
+      version: pending.version,
+    });
+  } catch (error) {
+    db.query("DELETE FROM settings WHERE key=?").run(UPDATE_INFLIGHT_KEY);
+    await reportGatewayUpdateResult(endpoint, {
+      error: error instanceof Error ? error.message : String(error),
+      requestId: pending.id,
+      status: "failed",
+      version: pending.version,
+    });
+  }
+};
+
 const applyGatewayUpdatePolicy = async (): Promise<void> => {
   if (process.env.TOKTRACKER_GATEWAY_AUTO_UPDATE === "0") {
     return;
@@ -933,10 +1033,16 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
   const accessKey = process.env.TOKTRACKER_API_KEY;
   warnAboutInsecureGateway(endpoint, accessKey);
   try {
-    const response = await fetch(`${endpoint}/api/v1/client-update-policy`, {
-      headers: accessKey ? { authorization: `Bearer ${accessKey}` } : undefined,
-      signal: AbortSignal.timeout(5000),
-    });
+    await reportInflightGatewayUpdate(endpoint);
+    const response = await fetch(
+      `${endpoint}/api/v1/client-update-policy?deviceId=${encodeURIComponent(deviceId!)}`,
+      {
+        headers: accessKey
+          ? { authorization: `Bearer ${accessKey}` }
+          : undefined,
+        signal: AbortSignal.timeout(5000),
+      }
+    );
     if (!response.ok) {
       await response.body?.cancel();
       return;
@@ -946,6 +1052,11 @@ const applyGatewayUpdatePolicy = async (): Promise<void> => {
     const policy: ClientUpdatePolicy = clientUpdatePolicySchema.parse(
       await response.json()
     );
+    // An explicit dashboard request overrides the window and daily limit.
+    if (policy.pendingUpdate) {
+      await runPendingGatewayUpdate(endpoint, policy.pendingUpdate);
+      return;
+    }
     if (
       !policy.enabled ||
       !isInUpdateWindow(policy) ||
@@ -993,15 +1104,6 @@ const providerClientPolicySchema = z.object({
     useT3CodeLocalSessions: z.boolean().optional(),
   }),
 });
-
-const gatewayHeaders = (): Headers => {
-  const headers = new Headers();
-  const accessKey = process.env.TOKTRACKER_API_KEY;
-  if (accessKey) {
-    headers.set("authorization", `Bearer ${accessKey}`);
-  }
-  return headers;
-};
 
 const applyProviderSettings = async (): Promise<void> => {
   if (!gatewayProviderSettingsEnabled()) {

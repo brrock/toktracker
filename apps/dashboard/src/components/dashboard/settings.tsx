@@ -14,6 +14,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { AppearanceSettings } from "@/components/dashboard/appearance-settings";
+import { ClientUpdatePanel } from "@/components/dashboard/client-update-panel";
 import { AgentLogo } from "@/components/dashboard/primitives";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -734,6 +735,12 @@ export const SettingsPage = ({
             </div>
           )}
         </div>
+        {clientAutoUpdate && (
+          <ClientUpdatePanel
+            channel={clientAutoUpdate.channel}
+            devices={data.devices}
+          />
+        )}
       </section>
     );
   }

@@ -49,6 +49,7 @@ const CLIENT_ROUTES = new Set([
   "/api/health",
   "/api/v1/ingest",
   "/api/v1/client-update-policy",
+  "/api/v1/client-update-result",
   "/api/v1/client-cursor-policy",
   "/api/v1/client-cursor-status",
   "/api/v1/client-cursor-commands/ack",
@@ -78,6 +79,84 @@ const clientAutoUpdateSettingsSchema = z.object({
   windowEndHour: z.number().int().min(0).max(23),
   windowStartHour: z.number().int().min(0).max(23),
 });
+const clientUpdateRequestBodySchema = z.object({
+  channel: z.enum(["stable", "nightly"]),
+  deviceIds: z.array(z.string().trim().min(1).max(128)).max(1000).optional(),
+});
+const clientUpdateResultSchema = z.object({
+  deviceId: z.string().trim().min(1).max(128),
+  error: z.string().trim().max(1024).optional(),
+  requestId: z.string().trim().min(1).max(128),
+  status: z.enum(["failed", "updated"]),
+  version: z.string().trim().max(128).optional(),
+});
+const githubReleaseResponseSchema = z.object({
+  body: z.string().nullish(),
+  html_url: z.string(),
+  name: z.string().nullish(),
+  prerelease: z.boolean(),
+  tag_name: z.string(),
+});
+const RELEASE_LOOKUP_TIMEOUT_MS = 10_000;
+const DEFAULT_RELEASE_REPOSITORY = "brrock/toktracker";
+// Release notes embed install instructions between these markers; the update
+// preview only needs the changelog that follows them.
+const INSTALL_NOTES_START = "## Install";
+const INSTALL_NOTES_END = "for pairing and networking guidance.";
+
+const changelogFromReleaseBody = (body: string): string => {
+  const start = body.indexOf(INSTALL_NOTES_START);
+  const end = body.indexOf(INSTALL_NOTES_END);
+  if (start === -1 || end === -1 || end < start) {
+    return body.trim();
+  }
+  return `${body.slice(0, start)}${body.slice(end + INSTALL_NOTES_END.length)}`
+    .replaceAll(/\n{3,}/gu, "\n\n")
+    .trim();
+};
+
+const lookupClientRelease = async (
+  channel: "nightly" | "stable"
+): Promise<{
+  changelog: string;
+  releaseUrl: string;
+  version: string;
+}> => {
+  const repository =
+    process.env.TOKTRACKER_RELEASE_REPOSITORY ?? DEFAULT_RELEASE_REPOSITORY;
+  const apiRoot = `https://api.github.com/repos/${repository}/releases`;
+  const headers = {
+    accept: "application/vnd.github+json",
+    "user-agent": "TokTracker gateway",
+  };
+  const signal = AbortSignal.timeout(RELEASE_LOOKUP_TIMEOUT_MS);
+  const response = await fetch(
+    channel === "stable" ? `${apiRoot}/latest` : `${apiRoot}?per_page=30`,
+    { headers, signal }
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub returned HTTP ${response.status}`);
+  }
+  const json: unknown = await response.json();
+  const release =
+    channel === "stable"
+      ? githubReleaseResponseSchema.parse(json)
+      : z
+          .array(githubReleaseResponseSchema)
+          .parse(json)
+          .find(
+            (candidate) =>
+              candidate.prerelease && candidate.tag_name.startsWith("nightly-")
+          );
+  if (!release) {
+    throw new Error("No nightly release is available");
+  }
+  return {
+    changelog: changelogFromReleaseBody(release.body ?? ""),
+    releaseUrl: release.html_url,
+    version: release.tag_name,
+  };
+};
 const cursorDashboardSettingsSchema = z.object({
   cloudAgentApiKey: z.string().max(512).optional(),
   enabled: z.boolean(),
@@ -424,9 +503,99 @@ export const createApp = (
       service: "toktracker-gateway",
     })
   );
-  app.get("/api/v1/client-update-policy", (context) =>
-    context.json(store.clientAutoUpdateSettings())
+  app.get("/api/v1/client-update-policy", (context) => {
+    const deviceId = context.req.query("deviceId")?.trim() ?? "";
+    const pending = deviceId
+      ? store.pendingClientUpdateFor(deviceId)
+      : undefined;
+    return context.json({
+      ...store.clientAutoUpdateSettings(),
+      ...(pending && {
+        pendingUpdate: {
+          channel: pending.channel,
+          id: pending.id,
+          version: pending.version,
+        },
+      }),
+    });
+  });
+  app.post("/api/v1/client-update-result", async (context) => {
+    let result: z.infer<typeof clientUpdateResultSchema>;
+    try {
+      result = clientUpdateResultSchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid update result" }, 400);
+    }
+    const recorded = store.recordClientUpdateResult(
+      result.deviceId,
+      result.requestId,
+      {
+        at: Date.now(),
+        error: result.error,
+        status: result.status,
+        version: result.version,
+      }
+    );
+    return context.json({ ok: recorded });
+  });
+  app.get("/api/v1/settings/client-update-release", async (context) => {
+    const channel =
+      context.req.query("channel") === "nightly" ? "nightly" : "stable";
+    try {
+      return context.json({
+        channel,
+        ...(await lookupClientRelease(channel)),
+      });
+    } catch (error) {
+      return context.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not look up the release",
+        },
+        502
+      );
+    }
+  });
+  app.get("/api/v1/settings/client-update-request", (context) =>
+    context.json(store.clientUpdateRequest() ?? null)
   );
+  app.post("/api/v1/settings/client-update-request", async (context) => {
+    let body: z.infer<typeof clientUpdateRequestBodySchema>;
+    try {
+      body = clientUpdateRequestBodySchema.parse(await context.req.json());
+    } catch {
+      return context.json({ error: "Invalid update request" }, 400);
+    }
+    const active = new Set(store.activeDeviceIds());
+    const deviceIds = (body.deviceIds ?? [...active]).filter((id) =>
+      active.has(id)
+    );
+    if (deviceIds.length === 0) {
+      return context.json({ error: "No devices to update" }, 400);
+    }
+    try {
+      const release = await lookupClientRelease(body.channel);
+      return context.json(
+        store.createClientUpdateRequest({
+          ...release,
+          channel: body.channel,
+          deviceIds,
+        })
+      );
+    } catch (error) {
+      return context.json(
+        {
+          error:
+            error instanceof Error
+              ? error.message
+              : "Could not look up the release",
+        },
+        502
+      );
+    }
+  });
   app.get("/api/v1/settings/client-auto-update", (context) =>
     context.json(store.clientAutoUpdateSettings())
   );
