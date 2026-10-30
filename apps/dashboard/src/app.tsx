@@ -85,6 +85,11 @@ const SessionsPage = lazy(async () => {
 });
 
 const SESSION_SORT_STORAGE_KEY = "toktracker-session-sort";
+const DATE_PARAM_PATTERN = /^\d{4}-\d{2}-\d{2}$/u;
+const validDateParam = (range: TimeRange, value: string | null) =>
+  range === "day" && value && DATE_PARAM_PATTERN.test(value)
+    ? value
+    : undefined;
 
 const fetchSummary = async (
   parameters: URLSearchParams,
@@ -147,6 +152,8 @@ const App = () => {
   const requestedRange = searchParams.get("range");
   const parsedRange = timeRangeSchema.safeParse(requestedRange);
   const range: TimeRange = parsedRange.success ? parsedRange.data : "month";
+  const requestedDate = searchParams.get("date");
+  const selectedDate = validDateParam(range, requestedDate);
   const selectedDeviceIds = (searchParams.get("devices") ?? "")
     .split(",")
     .filter(Boolean);
@@ -159,6 +166,25 @@ const App = () => {
           updated.set(key, value);
         } else {
           updated.delete(key);
+        }
+        if (key === "range") {
+          updated.delete("date");
+        }
+        return updated;
+      });
+    },
+    [setSearchParams]
+  );
+
+  const selectDate = useCallback(
+    (date?: string): void => {
+      setSearchParams((current) => {
+        const updated = new URLSearchParams(current);
+        updated.set("range", "day");
+        if (date) {
+          updated.set("date", date);
+        } else {
+          updated.delete("date");
         }
         return updated;
       });
@@ -184,8 +210,19 @@ const App = () => {
     }
     if (location.pathname !== "/" && requestedRange) {
       updateSearchParam("range");
+      return;
     }
-  }, [location.pathname, range, requestedRange, updateSearchParam]);
+    if (requestedDate && !selectedDate) {
+      updateSearchParam("date");
+    }
+  }, [
+    location.pathname,
+    range,
+    requestedDate,
+    requestedRange,
+    selectedDate,
+    updateSearchParam,
+  ]);
 
   // The overview (current range) and the all-time summary load
   // independently: the overview renders as soon as its smaller summary
@@ -196,6 +233,9 @@ const App = () => {
       const parameters = new URLSearchParams({ range, sessionSort });
       if (deviceParam) {
         parameters.set("devices", deviceParam);
+      }
+      if (selectedDate) {
+        parameters.set("date", selectedDate);
       }
       try {
         const summary = await fetchSummary(parameters, controller.signal);
@@ -212,7 +252,7 @@ const App = () => {
     };
     loadOverview();
     return () => controller.abort();
-  }, [deviceParam, range, sessionSort]);
+  }, [deviceParam, range, selectedDate, sessionSort]);
 
   // The gateway computes summaries one at a time, so on the landing page ask
   // for the heavier all-time summary only once the overview has painted.
@@ -314,6 +354,8 @@ const App = () => {
             <OverviewPage
               data={overviewData}
               range={range}
+              date={selectedDate}
+              setDate={selectDate}
               setRange={(nextRange) => updateSearchParam("range", nextRange)}
             />
           }
@@ -324,6 +366,8 @@ const App = () => {
             <OverviewPage
               data={overviewData}
               range={range}
+              date={selectedDate}
+              setDate={selectDate}
               setRange={(nextRange) => updateSearchParam("range", nextRange)}
             />
           }

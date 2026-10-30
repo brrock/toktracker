@@ -371,4 +371,16 @@ describe("Store", () => {
     expect(store.summary([], "month").hourly).toEqual([]);
     store.close();
   });
+
+  test("summarizes a specific local date for the single-day range", async () => {
+    const { store } = await createStore();
+    const target = new Date(2025, 9, 19, 14).getTime();
+    store.ingest(payload("device", "/one.jsonl", "one", target));
+    store.ingest(payload("device", "/two.jsonl", "two", target + 86_400_000));
+    const summary = store.summary([], "day", false, "lastSeen", "2025-10-19");
+    expect(summary.totals.sessions).toBe(1);
+    expect(summary.hourly).toHaveLength(24);
+    expect(summary.hourly[0]?.date).toBe("2025-10-19T00:00");
+    store.close();
+  });
 });

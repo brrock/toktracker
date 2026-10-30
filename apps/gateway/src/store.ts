@@ -38,6 +38,7 @@ const MILLISECOND_TIMESTAMP_THRESHOLD = 1_000_000_000_000;
 // stale rolling windows (such as "last 7 days") can get between ingests.
 const SUMMARY_CACHE_TTL_MS = 5 * 60 * 1000;
 const MAX_CACHED_SUMMARIES = 32;
+const LOCAL_DATE_PATTERN = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})$/u;
 // After an ingest, recompute summaries a dashboard asked for recently so the
 // next page load is served from cache instead of rescanning all usage.
 const SUMMARY_WARMUP_DELAY_MS = 2000;
@@ -48,6 +49,7 @@ export type SummaryArguments = [
   range: TimeRange,
   includeAllDevices: boolean,
   sessionSort: SessionSort,
+  date?: string,
 ];
 
 export type SummaryWorkerTask =
@@ -1430,13 +1432,15 @@ export class Store {
     deviceIds: string[] = [],
     range: TimeRange = "month",
     includeAllDevices = false,
-    sessionSort: SessionSort = "lastSeen"
+    sessionSort: SessionSort = "lastSeen",
+    date?: string
   ): DashboardSummary {
     const args: SummaryArguments = [
       [...deviceIds].toSorted(),
       range,
       includeAllDevices,
       sessionSort,
+      date,
     ];
     const now = Date.now();
     this.recordSummaryRequest(args, now);
@@ -1448,13 +1452,15 @@ export class Store {
     deviceIds: string[] = [],
     range: TimeRange = "month",
     includeAllDevices = false,
-    sessionSort: SessionSort = "lastSeen"
+    sessionSort: SessionSort = "lastSeen",
+    date?: string
   ): Promise<DashboardSummary> {
     const args: SummaryArguments = [
       [...deviceIds].toSorted(),
       range,
       includeAllDevices,
       sessionSort,
+      date,
     ];
     const now = Date.now();
     this.recordSummaryRequest(args, now);
@@ -1681,7 +1687,8 @@ export class Store {
     deviceIds: string[],
     range: TimeRange,
     includeAllDevices: boolean,
-    sessionSort: SessionSort
+    sessionSort: SessionSort,
+    date?: string
   ): DashboardSummary {
     const where = deviceIds.length
       ? ` WHERE device_id IN (${deviceIds.map(() => "?").join(",")})`
@@ -1693,13 +1700,17 @@ export class Store {
       )
       // SAFETY: bun:sqlite returns rows matching the explicitly selected columns and database schema.
       .all(...deviceIds) as StoredSessionRow[];
-    const rangeStart = Store.rangeStart(range);
+    const day = range === "day" ? Store.parseLocalDate(date) : undefined;
+    const rangeStart = day ? day.getTime() : Store.rangeStart(range);
+    const rangeEnd = day
+      ? new Date(day.getFullYear(), day.getMonth(), day.getDate() + 1).getTime()
+      : Number.POSITIVE_INFINITY;
     const messages: UsageMessage[] = [
-      ...this.usageForSessions(rows, deviceIds, rangeStart).values(),
+      ...this.usageForSessions(rows, deviceIds, rangeStart, rangeEnd).values(),
     ].flat();
     const core = summarize(messages, { hourly: range === "day" });
     if (range === "day") {
-      core.hourly = Store.hourlyBuckets(core.hourly);
+      core.hourly = Store.hourlyBuckets(core.hourly, day);
     }
     const deviceFilter =
       includeAllDevices || deviceIds.length === 0
@@ -1859,7 +1870,8 @@ export class Store {
   private usageForSessions(
     rows: StoredSessionRow[],
     deviceIds: string[] = [],
-    rangeStart = Number.NEGATIVE_INFINITY
+    rangeStart = Number.NEGATIVE_INFINITY,
+    rangeEnd = Number.POSITIVE_INFINITY
   ): Map<string, UsageMessage[]> {
     const sessions = new Map(
       rows.map((row) => [
@@ -1878,6 +1890,12 @@ export class Store {
         `(CASE WHEN abs(timestamp)>${MILLISECOND_TIMESTAMP_THRESHOLD} THEN timestamp ELSE timestamp*1000 END)>=?`
       );
       parameters.push(rangeStart);
+    }
+    if (Number.isFinite(rangeEnd)) {
+      conditions.push(
+        `(CASE WHEN abs(timestamp)>${MILLISECOND_TIMESTAMP_THRESHOLD} THEN timestamp ELSE timestamp*1000 END)<?`
+      );
+      parameters.push(rangeEnd);
     }
     const where =
       conditions.length > 0 ? ` WHERE ${conditions.join(" AND ")}` : "";
@@ -1959,11 +1977,29 @@ export class Store {
     return summary;
   }
 
+  /** Parses `YYYY-MM-DD` as local midnight; undefined for anything else. */
+  static parseLocalDate(value: string | undefined): Date | undefined {
+    const match = value ? LOCAL_DATE_PATTERN.exec(value) : null;
+    if (!match) {
+      return undefined;
+    }
+    const year = Number(match.groups?.year);
+    const month = Number(match.groups?.month);
+    const dayOfMonth = Number(match.groups?.day);
+    const parsed = new Date(year, month - 1, dayOfMonth);
+    return parsed.getFullYear() === year &&
+      parsed.getMonth() === month - 1 &&
+      parsed.getDate() === dayOfMonth
+      ? parsed
+      : undefined;
+  }
+
   private static hourlyBuckets(
-    hourly: DashboardSummary["hourly"]
+    hourly: DashboardSummary["hourly"],
+    selectedDay: Date = new Date()
   ): DashboardSummary["hourly"] {
     const values = new Map(hourly.map((point) => [point.date, point]));
-    const now = new Date();
+    const now = selectedDay;
     const day = `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
     return Array.from({ length: 24 }, (_, hour) => {
       const date = `${day}T${pad(hour)}:00`;
